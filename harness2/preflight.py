@@ -43,18 +43,23 @@ def check(adapter, *, judge=False) -> list[str]:
             errors.append(f"{label}: {type(exc).__name__}; see README.md")
             return False
 
-    for validate in (
-        lambda: config.validate_models(judge=judge),
-        adapter.tasks,
-        OpencodeSubstrate().preflight,
-        adapter.preflight,
-    ):
+    bench = adapter.spec.name.split("-", 1)[0]
+    probes = [lambda: config.validate_models(judge=judge), adapter.tasks, adapter.preflight]
+    if bench != "sd":
+        # Only sd runs without an OpenCode checkout: it drives the claude CLI
+        # through the cc substrate and keeps its repo at HARNESS2_SD_REPO.
+        probes.insert(2, OpencodeSubstrate().preflight)
+    for validate in probes:
         try:
             validate()
         except (OSError, RuntimeError, ValueError) as exc:
             errors.append(str(exc))
 
-    bench = adapter.spec.name.split("-", 1)[0]
+    if bench == "sd":
+        # sd has no third_party dependency checkout: its repo lives at
+        # HARNESS2_SD_REPO and its readiness (claude roundtrip, repo, meson/ninja)
+        # is checked by SdShieldAdapter.preflight above.
+        return errors
     name = {"jb": "job-bench-eval", "lab": "harvey-labs", "wb": "workbuddy-bench"}[bench]
     repo = config.DEPENDENCIES / name
     for dependency in (name, "opencode"):

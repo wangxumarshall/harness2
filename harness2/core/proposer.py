@@ -39,6 +39,32 @@ from .spec import ChannelSpec
 SYSTEM_ARG_MAX = 120_000
 
 
+def claude_cli_env(
+    base: dict[str, str], project: str, region: str, model: str
+) -> dict[str, str]:
+    """The claude_cli channel env: Vertex wiring, unless the CLI already targets a
+    custom endpoint (e.g. a GLM bridge via ANTHROPIC_BASE_URL) — then the CLI's own
+    configuration wins and the endpoint credentials are restored from the parent
+    environment (Proposer drops them for the Vertex path; a custom endpoint needs
+    them passed through)."""
+    e = dict(base)
+    if os.environ.get("ANTHROPIC_BASE_URL"):
+        for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"):
+            value = os.environ.get(key)
+            if value:
+                e[key] = value
+        return e
+    e.update(
+        {
+            "CLAUDE_CODE_USE_VERTEX": "1",
+            "ANTHROPIC_VERTEX_PROJECT_ID": project,
+            "CLOUD_ML_REGION": region,
+            "ANTHROPIC_MODEL": model,
+        }
+    )
+    return e
+
+
 MAX_CONCURRENCY = int(config.PROPOSER_CONCURRENCY)
 _SEM = threading.BoundedSemaphore(MAX_CONCURRENCY) if MAX_CONCURRENCY > 0 else None
 
@@ -105,14 +131,7 @@ class Proposer:
     def env(self) -> dict[str, str]:
         e = {k: v for k, v in os.environ.items() if k not in _DROP_ENV}
         if self.spec.kind == "claude_cli":
-            e.update(
-                {
-                    "CLAUDE_CODE_USE_VERTEX": "1",
-                    "ANTHROPIC_VERTEX_PROJECT_ID": self.project,
-                    "CLOUD_ML_REGION": self.region,
-                    "ANTHROPIC_MODEL": self.spec.model,
-                }
-            )
+            e = claude_cli_env(e, self.project, self.region, self.spec.model)
         else:
             e.update(
                 {
