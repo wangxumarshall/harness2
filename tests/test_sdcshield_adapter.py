@@ -405,6 +405,23 @@ class ScoreTests(EnvFixture):
         got = (ws / "cfg.txt").read_text(encoding="utf-8").strip()
         self.assertEqual(got, str(run_dir / "claude-home"))
 
+    def test_l2_vacuous_meson_suite_is_not_green(self):
+        ad = self._adapter()
+        run_dir, ws = self._ws("rd-vac")
+        (ws / "builddir-h2").mkdir(exist_ok=True)
+        # a real meson setup so the branch reaches meson test; the project defines
+        # no tests, so the suite is vacuous and must NOT be ok
+        import subprocess as sp
+
+        sp.run(
+            ["meson", "setup", str(ws / "builddir-h2")], cwd=ws,
+            capture_output=True, text=True, timeout=600,
+        )
+        out = ad._l2_tests(ws, run_dir, {"ok": True, "warnings": 0})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["total"], 0)
+        self.assertIn("HARNESS2_SD_TEST_CMD", out["note"])
+
     def test_score_shape_includes_judge_keys(self):
         ad = self._adapter()
         run_dir = self.base / "rd-keys"
@@ -494,6 +511,12 @@ class SyncTests(EnvFixture):
             )
             self.assertTrue((target / ".claude" / "agents" / "reviewer.md").is_file())
             self.assertFalse((target / "GUARDRAILS.md").exists())  # composed, not copied
+            # the hooks file is replay-isolation only: daily Claude Code never loads
+            # it (and the leakguard script it references is not synced) — so sync
+            # must not deploy it into the target repo
+            self.assertFalse(
+                (target / ".claude" / "settings.harness.json").exists()
+            )
 
 
 class RollbackGuardTests(EnvFixture):
@@ -557,6 +580,53 @@ class RollbackGuardTests(EnvFixture):
         self._mk_run(results_root, "r2", "pr-2", True)
         dropped = guard(library_root, results_root)
         self.assertEqual(dropped, [])
+
+    def test_task_scores_respects_adopt_ok(self):
+        import sys
+
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+        from sd_rollback_guard import task_scores
+
+        from harness2.core import runmark as RM
+
+        results = self.base / "res-adopt"
+        rd = results / "r1"
+        rd.mkdir(parents=True)
+        RM.mark_complete(
+            rd, run_id="r1", harness_dir=None,
+            extra={"task_id": "pr-3", "domain": "detector-cpu"},
+        )
+        (rd / "scores.json").write_text(
+            json.dumps(
+                {"l1": {"ok": True}, "l2": {"ok": True}, "l3": {"ok": False},
+                 "adopt_ok": False}
+            ),
+            encoding="utf-8",
+        )
+        self.assertEqual(task_scores(results), {"pr-3": [False]})
+
+    def test_task_scores_skips_wrong_shape_scores(self):
+        import sys
+
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+        from sd_rollback_guard import task_scores
+
+        from harness2.core import runmark as RM
+
+        results = self.base / "res-shape"
+        for i, payload in enumerate(
+            ['{"l1": "oops", "l2": {"ok": true}}', "[1, 2, 3]", "not json{"]
+        ):
+            rd = results / f"r{i}"
+            rd.mkdir(parents=True)
+            RM.mark_complete(
+                rd, run_id=f"r{i}", harness_dir=None,
+                extra={"task_id": f"pr-{i}", "domain": "detector-cpu"},
+            )
+            (rd / "scores.json").write_text(payload, encoding="utf-8")
+        # a wrong-shape row is skipped, not fatal; other rows still land
+        self._mk_run(results, "r9", "pr-9", True)
+        self.assertEqual(task_scores(results), {"pr-9": [True]})
 
 
 class PreflightTests(EnvFixture):

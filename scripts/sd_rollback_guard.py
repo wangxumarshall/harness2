@@ -15,9 +15,10 @@
 
 """Rollback guard for the sd cell: drop a domain's latest adoption when it regressed.
 
-Compares the judged L1+L2 pass-rate of the newest library entry against the window
-of entries before it; on regression, Library.forget() removes the entry so the next
-sweep re-derives the harness without it. Run it after judging, before syncing.
+Compares the judged pass-rate (adopt_ok, falling back to L1+L2 for legacy rows) of the
+newest library entry against the window of entries before it; on regression,
+Library.forget() removes the entry so the next sweep re-derives the harness without
+it. Run it after judging, before syncing.
 """
 
 from __future__ import annotations
@@ -36,7 +37,10 @@ from harness2.substrate.claude_code import CLAUDE_CODE_SURFACE  # noqa: E402
 
 
 def task_scores(results_root: Path) -> dict[str, list[bool]]:
-    """task_id -> L1+L2 verdicts of every judged run (from mark + scores.json)."""
+    """task_id -> adoption verdicts of every judged run (from mark + scores.json).
+
+    Prefers adopt_ok (L1+L2+L3) when present; falls back to l1/l2 for legacy rows.
+    """
     out: dict[str, list[bool]] = {}
     if not results_root.is_dir():
         return out
@@ -50,9 +54,16 @@ def task_scores(results_root: Path) -> dict[str, list[bool]]:
             continue
         try:
             s = json.loads(scores.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
+            # adopt_ok (L1+L2+L3) is the real verdict; l1/l2 is the legacy shape.
+            # Both computations stay in the try: a wrong-shape scores.json (non-dict
+            # top level, or a non-dict l1/l2 value) must skip the row, not abort
+            # the whole guard run.
+            if s.get("adopt_ok") is not None:
+                ok = bool(s["adopt_ok"])
+            else:
+                ok = bool(s.get("l1", {}).get("ok") and s.get("l2", {}).get("ok"))
+        except (json.JSONDecodeError, AttributeError, TypeError):
             continue
-        ok = bool(s.get("l1", {}).get("ok") and s.get("l2", {}).get("ok"))
         out.setdefault(task, []).append(ok)
     return out
 

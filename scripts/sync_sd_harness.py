@@ -16,8 +16,10 @@
 """Sync an adopted claude_code harness tree into the sdcshield working repo.
 
 The four always-on files are composed into the repo's CLAUDE.md; skills, agents,
-scripts and the hooks file are copied to their native paths. Review the diff and
-commit it in the target repo.
+and scripts are copied to their native paths. The hooks file is NOT synced: it is
+replay-isolation only (rollouts inject it via --settings; daily Claude Code loads
+only settings.json/settings.local.json, and its leakguard script does not ship).
+Review the diff and commit it in the target repo.
 """
 
 from __future__ import annotations
@@ -55,6 +57,9 @@ def main() -> int:
     for rel in sorted(tree):
         if rel != "CLAUDE.md" and rel in CLAUDE_CODE_SURFACE.always_on:
             continue  # composed into CLAUDE.md, not copied as a file
+        if rel == CLAUDE_CODE_SURFACE.hooks_file:
+            continue  # replay-isolation only: rollouts inject it via --settings; daily
+            # work must not block gh/git fetch, and the leakguard script is not synced
         if rel.startswith("sub_agents/") and rel.endswith("/AGENT.md"):
             name = rel[len("sub_agents/") : -len("/AGENT.md")]
             dst = repo / ".claude" / "agents" / f"{name}.md"
@@ -65,6 +70,7 @@ def main() -> int:
     print(f"target repo: {repo}")
     for rel, dst in actions:
         print(f"  {rel} -> {dst.relative_to(repo)}")
+    print("  (skipped) .claude/settings.harness.json — replay isolation only (not loaded daily)")
     print("  (composed) CLAUDE.md <- CLAUDE.md + GUARDRAILS + MEMORY + TOOL_GUIDANCE")
     if args.dry_run:
         print("dry run: nothing written")

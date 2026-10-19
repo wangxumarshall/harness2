@@ -670,7 +670,13 @@ class SdShieldAdapter:
         (run_dir / "tests.log").write_text(r.stdout + r.stderr, encoding="utf-8")
         ok_n = int((re.search(r"^Ok:\s+(\d+)", r.stdout or "", re.M) or ["", "0"])[1])
         fail_n = int((re.search(r"^Fail:\s+(\d+)", r.stdout or "", re.M) or ["", "0"])[1])
-        return {"ok": r.returncode == 0, "passed": ok_n, "total": ok_n + fail_n}
+        ran = ok_n + fail_n
+        return {
+            "ok": r.returncode == 0 and ran > 0,
+            "passed": ok_n,
+            "total": ran,
+            "note": "" if ran else "no meson tests defined (set HARNESS2_SD_TEST_CMD)",
+        }
 
     def _l3_boards(self, run_dir: Path, l1: dict) -> dict:
         if not l1["ok"]:
