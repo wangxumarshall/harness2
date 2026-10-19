@@ -103,5 +103,47 @@ class ConfigTests(EnvFixture):
         self.assertEqual(e["ANTHROPIC_MODEL"], "m")
 
 
+class DomainTests(unittest.TestCase):
+    def test_path_and_title_heuristics(self):
+        from harness2.benchmarks.sdcshield import _domain_of
+
+        self.assertEqual(_domain_of(["framework/cpu/det.c"], "feat: x"), "detector-cpu")
+        self.assertEqual(_domain_of(["framework/gpu/g.c"], "fix"), "detector-gpu")
+        self.assertEqual(_domain_of(["framework/idxd/i.c"], "fix"), "detector-idxd")
+        self.assertEqual(_domain_of(["framework/build.c"], "fix"), "framework")
+        self.assertEqual(_domain_of(["bats/testenv.bash"], "fix"), "testing")
+        self.assertEqual(_domain_of(["tests/cpu/x.c"], "fix"), "testing")
+        self.assertEqual(_domain_of(["docs/x.md"], "feat: y"), "docs")
+        self.assertEqual(_domain_of(["anything"], "docs: polish"), "docs")
+        self.assertEqual(_domain_of(["README.md"], "chore"), "misc")
+
+    def test_strip_criteria_removes_checklists(self):
+        from harness2.benchmarks.sdcshield import _strip_criteria
+
+        body = "Add a detector.\n\n## Checklist\n- [x] built\n- [ ] tested\n\n## Why\nbecause\n"
+        out = _strip_criteria(body)
+        self.assertNotIn("Checklist", out)
+        self.assertNotIn("[x]", out)
+        self.assertIn("Add a detector.", out)
+        self.assertIn("because", out)
+
+
+class PrEnumerationTests(EnvFixture):
+    def test_merged_prs_cached_and_shaped(self):
+        from harness2.benchmarks.sdcshield import _merged_prs
+
+        records = _merged_prs()
+        self.assertEqual(len(records), 1)
+        r = records[0]
+        self.assertEqual(r["number"], 1)
+        self.assertEqual(r["domain"], "detector-cpu")
+        self.assertEqual(r["files"], ["framework/cpu/det.c"])
+        self.assertTrue(r["base_sha"])
+        self.assertNotEqual(r["base_sha"], r["merge_sha"])
+        cache = self.runs / "sd" / "_tasks" / "prs.json"
+        self.assertTrue(cache.is_file())
+        self.assertEqual(_merged_prs(), records)  # cached read is stable
+
+
 if __name__ == "__main__":
     unittest.main()
