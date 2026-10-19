@@ -652,14 +652,14 @@ class SdShieldAdapter:
         if not l1["ok"]:
             return {"ok": False, "passed": 0, "total": 0, "note": "build failed"}
         bd = ws / "builddir-h2"
-        env = {**_sd_env(run_dir.parent), "SD_BUILDDIR": str(bd), "SD_WORKSPACE": str(ws)}
+        env = {**_sd_env(run_dir), "SD_BUILDDIR": str(bd), "SD_WORKSPACE": str(ws)}
         if config.SD_TEST_CMD:
             r = subprocess.run(
                 ["sh", "-c", config.SD_TEST_CMD], cwd=ws, env=env,
                 capture_output=True, text=True, timeout=7200,
             )
             (run_dir / "tests.log").write_text(r.stdout + r.stderr, encoding="utf-8")
-            return {"ok": r.returncode == 0, "cmd": "custom"}
+            return {"ok": r.returncode == 0, "passed": 0, "total": 0, "cmd": "custom"}
         r = subprocess.run(
             ["meson", "test", "-C", str(bd), "--num-processes", "2"],
             cwd=ws, capture_output=True, text=True, timeout=7200,

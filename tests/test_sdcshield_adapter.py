@@ -387,6 +387,22 @@ class ScoreTests(EnvFixture):
         empty.mkdir()
         self.assertIsNone(ad.score(empty, "pr-1"))
 
+    def test_l2_custom_command_gets_per_run_env(self):
+        ad = self._adapter()
+        run_dir, ws = self._ws("rd-cmd")
+        cmd = (
+            'echo "$CLAUDE_CONFIG_DIR" > "$SD_WORKSPACE/cfg.txt" '
+            '&& test -n "$SD_BUILDDIR"'
+        )
+        with patch.object(config, "SD_TEST_CMD", cmd):
+            out = ad._l2_tests(ws, run_dir, {"ok": True, "warnings": 0})
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["cmd"], "custom")
+        self.assertEqual(out["passed"], 0)
+        self.assertEqual(out["total"], 0)
+        got = (ws / "cfg.txt").read_text(encoding="utf-8").strip()
+        self.assertEqual(got, str(run_dir / "claude-home"))
+
 
 if __name__ == "__main__":
     unittest.main()
