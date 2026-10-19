@@ -21,14 +21,29 @@ command. The judge layer never sees the real PR's diff.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
 import shutil
+import signal
 import subprocess
+import tempfile
+import threading
 from pathlib import Path
 
 from .. import config
+from ..core import runmark as RM
+from ..core import tree as HT
 from ..core.spec import BenchPrompts, BenchSpec, resolve_channel_model
+from ..substrate.base import Install, RunRequest
+from ..substrate.claude_code import (
+    CLAUDE_CODE_SURFACE,
+    ClaudeCodeSubstrate,
+    LEAK_GUARD_JSON,
+    parse_stream,
+)
+from .tasks import select
 
 SD_BASE = BenchPrompts(
     work=(
@@ -214,3 +229,310 @@ def _merged_prs() -> list[dict]:
         json.dumps(records, ensure_ascii=False, indent=1), encoding="utf-8"
     )
     return records
+
+_BASE_LOCK = threading.Lock()
+_BASE_DONE: set[Path] = set()
+
+_SD_DROP_ENV = frozenset(
+    {
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "GH_HOST",
+        "GITHUB_API_URL",
+        "GITHUB_REPOSITORY",
+        "CLAUDE_CODE_USE_VERTEX",
+        "ANTHROPIC_VERTEX_PROJECT_ID",
+        "CLOUD_ML_REGION",
+    }
+)
+
+
+def _sd_env(run_dir: Path) -> dict[str, str]:
+    """Scrubbed environment for a rollout: no GitHub credentials, isolated config."""
+    e = {k: v for k, v in os.environ.items() if k not in _SD_DROP_ENV}
+    e["CLAUDE_CONFIG_DIR"] = str(Path(run_dir) / "claude-home")
+    return e
+
+
+def _run_claude(cmd, *, cwd, env, stdin_text, stdout, timeout):
+    """Run the claude CLI in its own process group; kill the group on wall timeout."""
+    proc = subprocess.Popen(
+        cmd, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=stdout,
+        stderr=subprocess.PIPE, start_new_session=True, text=True,
+    )
+    try:
+        _, err = proc.communicate(input=stdin_text, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            proc.kill()
+        proc.communicate()
+        raise
+    if err and err.strip():
+        print(f"  [sd-cc] claude stderr: {err.strip()[-300:]}", flush=True)
+
+
+class SdShieldAdapter:
+    """The BenchmarkAdapter surface for sdcshield PR replay, on the claude_code substrate."""
+
+    def __init__(
+        self,
+        *,
+        substrate: str = "cc",
+        model: str | None = None,
+        timeout: int | None = None,
+        split_file: Path | None = None,
+    ):
+        if substrate != "cc":
+            raise ValueError(f"sdcshield runs on the cc substrate only, got {substrate!r}")
+        self.split_file = split_file
+        self.spec = sd_spec()
+        self.substrate = ClaudeCodeSubstrate(launcher=self._launch_cc)
+        self.model = model or "claude-cli-default"
+        self.timeout = int(timeout or 7200)
+        self._results_root = self.spec.runs_root / "results" / "cc"
+        self._records: dict[int, dict] | None = None
+
+    # -- task stream ---------------------------------------------------------
+
+    def _records_map(self) -> dict[int, dict]:
+        if self._records is None:
+            self._records = {r["number"]: r for r in _merged_prs()}
+        return self._records
+
+    def tasks(self, split: str = "all") -> list[str]:
+        mapping = {f"pr-{n}": r["domain"] for n, r in self._records_map().items()}
+        return select(mapping, split, self.split_file, benchmark="sd")
+
+    def domain_of(self, task_id: str) -> str:
+        return self._record(task_id)["domain"]
+
+    def _record(self, task_id: str) -> dict:
+        try:
+            n = int(task_id.split("-", 1)[1])
+        except (IndexError, ValueError):
+            raise KeyError(f"bad task id {task_id!r}; expected pr-<number>") from None
+        try:
+            return self._records_map()[n]
+        except KeyError:
+            raise KeyError(f"unknown task {task_id!r}") from None
+
+    def task_prompt(self, task_id: str, *, max_chars: int = 12_000) -> str:
+        r = self._record(task_id)
+        parts = [f"# TASK {task_id}", f"**Title:** {r['title']}"]
+        if r["body"]:
+            parts.append("## Work order\n" + r["body"])
+        parts.append(
+            "## Notes\n"
+            "- The repository at the current directory is the working tree.\n"
+            "- Make the change directly in the tree; the resulting diff is the "
+            "deliverable.\n"
+            "- Build and run the relevant tests before finishing."
+        )
+        return "\n\n".join(parts)[:max_chars]
+
+    def task_files(self, task_id: str) -> Path | None:
+        return None
+
+    # -- rollout lifecycle ---------------------------------------------------
+
+    def _run_dir(self, run_id: str) -> Path:
+        return self._results_root / run_id
+
+    def execute(
+        self, task_id: str, harness_dir: Path | None, run_id: str, *, timeout: int | None = None
+    ) -> Path:
+        out = self._run_dir(run_id)
+        if RM.is_complete(out, harness_dir=harness_dir) and self.artifacts_intact(out):
+            return out
+        if out.is_dir() and any(out.iterdir()):
+            reason = RM.why_not(out, harness_dir=harness_dir)
+            print(f"  [sd-cc] re-rolling {run_id}: {reason}", flush=True)
+            self._safe_rmtree(out)
+        install = self._install(harness_dir)
+        try:
+            self.substrate.execute(
+                task_id, install, [run_id], int(timeout or self.timeout)
+            )
+        finally:
+            if install.extras.get("harness") == "staged":
+                shutil.rmtree(install.staging_dir, ignore_errors=True)
+        if not (out / "metrics.json").is_file():
+            raise RuntimeError(
+                f"rollout produced no metrics.json: {out} — the claude session stream "
+                "had no result event (dead chain / missing CLI), so this failure must "
+                "not be cached"
+            )
+        RM.mark_complete(
+            out,
+            run_id=run_id,
+            harness_dir=harness_dir,
+            extra={
+                "output_fingerprint": self._output_fingerprint(out),
+                "task_id": task_id,
+                "domain": self.domain_of(task_id),
+            },
+        )
+        return out
+
+    def _install(self, harness_dir: Path | None) -> Install:
+        """BASE (harness_dir=None) is a value: fingerprint 'base'."""
+        tree_dir = self.base_harness() if harness_dir is None else Path(harness_dir)
+        inst = self.substrate.materialise(tree_dir, self.spec, {})
+        is_base = harness_dir is None
+        return Install(
+            staging_dir=inst.staging_dir,
+            fingerprint="base" if is_base else inst.fingerprint,
+            extras={**inst.extras, "harness": "base" if is_base else "staged"},
+        )
+
+    def base_harness(self) -> Path:
+        """Seed c1 from the repo's CLAUDE.md; carry the leak-guard hooks."""
+        d = self.spec.runs_root / f"_base_harness_cc_{os.getpid()}"
+        with _BASE_LOCK:
+            if d not in _BASE_DONE:
+                seed_path = config.SD_REPO / "CLAUDE.md"
+                seed = (
+                    seed_path.read_text(encoding="utf-8", errors="replace")
+                    if seed_path.is_file()
+                    else ""
+                )
+                if len(seed) > CLAUDE_CODE_SURFACE.always_on_max:
+                    seed = (
+                        seed[: CLAUDE_CODE_SURFACE.always_on_max]
+                        + "\n<!-- truncated at the always-on cap -->\n"
+                    )
+                HT.write_tree(
+                    CLAUDE_CODE_SURFACE,
+                    {
+                        "CLAUDE.md": seed,
+                        CLAUDE_CODE_SURFACE.hooks_file: LEAK_GUARD_JSON,
+                    },
+                    d,
+                )
+                _BASE_DONE.add(d)
+        return d
+
+    def _launch_cc(self, req: RunRequest, install: Install) -> list[Path]:
+        dirs = []
+        record = self._record(req.task_ref)
+        for run_id in req.run_ids:
+            run_dir = self._run_dir(run_id)
+            run_dir.mkdir(parents=True, exist_ok=True)
+            ws = run_dir / "workspace"
+            if ws.exists():
+                shutil.rmtree(ws, ignore_errors=True)
+                _git(config.SD_REPO, "worktree", "prune")
+            _git(
+                config.SD_REPO, "worktree", "add", "--detach", str(ws), record["base_sha"]
+            )
+            for entry in ("CLAUDE.md", ".claude", "scripts"):
+                src = Path(install.staging_dir) / entry
+                if not src.exists():
+                    continue
+                dst = ws / entry
+                if src.is_dir():
+                    shutil.copytree(src, dst, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(src, dst)
+            stream = run_dir / "claude_session.jsonl"
+            cmd = [
+                "claude", "-p",
+                "--output-format", "stream-json", "--verbose",
+                "--dangerously-skip-permissions",
+                "--settings", str(ws / ".claude" / "settings.harness.json"),
+                "--max-turns", str(config.SD_MAX_TURNS),
+            ]
+            try:
+                with stream.open("w", encoding="utf-8") as out:
+                    _run_claude(
+                        cmd,
+                        cwd=ws,
+                        env=_sd_env(run_dir),
+                        stdin_text=self.task_prompt(req.task_ref),
+                        stdout=out,
+                        timeout=req.timeout,
+                    )
+            except subprocess.TimeoutExpired:
+                print(f"  [sd-cc] wall-timeout for {req.task_ref} @ {run_id}", flush=True)
+            self._collect(run_dir, ws)
+            dirs.append(run_dir)
+        return dirs
+
+    def _collect(self, run_dir: Path, ws: Path) -> None:
+        """Record the diff (the deliverable) and the metrics (from the result event)."""
+        subprocess.run(
+            ["git", "-C", str(ws), "add", "-N", "."], capture_output=True, text=True
+        )
+        diff = subprocess.run(
+            ["git", "-C", str(ws), "diff"], capture_output=True, text=True
+        )
+        (run_dir / "diff.patch").write_text(diff.stdout, encoding="utf-8")
+        metrics = {"cost_usd": 0.0, "num_turns": 0, "is_error": True, "subtype": None}
+        for ev in parse_stream(run_dir / "claude_session.jsonl"):
+            if ev.get("type") == "result":
+                metrics = {
+                    "cost_usd": float(ev.get("total_cost_usd") or 0.0),
+                    "num_turns": int(ev.get("num_turns") or 0),
+                    "is_error": bool(ev.get("is_error")),
+                    "subtype": ev.get("subtype"),
+                }
+        (run_dir / "metrics.json").write_text(json.dumps(metrics), encoding="utf-8")
+
+    def _safe_rmtree(self, d: Path) -> None:
+        """rm -rf restricted to this cell's results root — a guard, not a convenience."""
+        d = Path(d).resolve()
+        root = self._results_root.resolve()
+        if root != d and root not in d.parents:
+            raise RuntimeError(f"refusing to remove {d}: outside the sd results root {root}")
+        subprocess.run(
+            ["git", "-C", str(config.SD_REPO), "worktree", "prune"],
+            capture_output=True, text=True,
+        )
+        shutil.rmtree(d, ignore_errors=True)
+
+    # -- read-back -----------------------------------------------------------
+
+    def delivered(self, run_dir: Path) -> bool:
+        p = Path(run_dir) / "diff.patch"
+        return p.is_file() and bool(
+            p.read_text(encoding="utf-8", errors="replace").strip()
+        )
+
+    def trajectory(self, run_dir: Path, *, obs_trunc: int) -> str:
+        stream = Path(run_dir) / "claude_session.jsonl"
+        if not stream.is_file():
+            return f"(no trajectory recorded for {Path(run_dir).name})"
+        return self.substrate.read_trajectory(
+            stream, obs_trunc=obs_trunc, max_chars=10**9
+        )
+
+    def deliverable_files(self, run_dir: Path) -> dict[str, str]:
+        p = Path(run_dir) / "diff.patch"
+        if not p.is_file():
+            return {}
+        return {"diff.patch": p.read_text(encoding="utf-8", errors="replace")}
+
+    def deliverable_text(self, run_dir: Path) -> str:
+        files = self.deliverable_files(run_dir)
+        if not files:
+            return "(this run produced NO deliverables)"
+        return "\n\n".join(
+            f"----- FILE: {n} -----\n{t.strip() or '(empty file)'}"
+            for n, t in files.items()
+        )
+
+    def _output_fingerprint(self, run_dir: Path) -> str | None:
+        p = Path(run_dir) / "diff.patch"
+        if not self.delivered(run_dir):
+            return None
+        return hashlib.sha1(p.read_bytes()).hexdigest()
+
+    def artifacts_intact(self, run_dir: Path) -> bool:
+        marker = RM.read_mark(run_dir) or {}
+        return (
+            (Path(run_dir) / "metrics.json").is_file()
+            and "output_fingerprint" in marker
+            and marker["output_fingerprint"] == self._output_fingerprint(run_dir)
+        )

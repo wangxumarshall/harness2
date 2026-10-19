@@ -145,5 +145,90 @@ class PrEnumerationTests(EnvFixture):
         self.assertEqual(_merged_prs(), records)  # cached read is stable
 
 
+class AdapterTests(EnvFixture):
+    def test_tasks_domains_prompts(self):
+        ad = self._adapter()
+        self.assertEqual(ad.tasks(), ["pr-1"])
+        self.assertEqual(ad.domain_of("pr-1"), "detector-cpu")
+        prompt = ad.task_prompt("pr-1")
+        self.assertIn("# TASK pr-1", prompt)
+        self.assertIn("diff is the deliverable", prompt)
+        self.assertIsNone(ad.task_files("pr-1"))
+
+    def test_base_harness_carries_seed_and_leak_guard(self):
+        from harness2.substrate.claude_code import LEAK_GUARD_JSON
+
+        ad = self._adapter()
+        d = ad.base_harness()
+        self.assertIn("# seed harness", (d / "CLAUDE.md").read_text(encoding="utf-8"))
+        self.assertEqual(
+            (d / ".claude" / "settings.harness.json").read_text(encoding="utf-8"),
+            LEAK_GUARD_JSON,
+        )
+
+    def test_install_base_vs_staged(self):
+        ad = self._adapter()
+        base = ad._install(None)
+        self.assertEqual(base.fingerprint, "base")
+        self.assertEqual(base.extras["harness"], "base")
+        staged = ad._install(Path(ad.base_harness()))
+        self.assertNotEqual(staged.fingerprint, "base")
+        self.assertEqual(staged.extras["harness"], "staged")
+
+    def test_sd_env_scrubs_credentials_and_isolates_config(self):
+        from harness2.benchmarks.sdcshield import _sd_env
+
+        with patch.dict(
+            os.environ,
+            {"GH_TOKEN": "x", "ANTHROPIC_BASE_URL": "http://glm", "PATH": "/bin"},
+            clear=True,
+        ):
+            e = _sd_env(Path("/tmp/rd"))
+        self.assertNotIn("GH_TOKEN", e)
+        self.assertEqual(e["ANTHROPIC_BASE_URL"], "http://glm")
+        self.assertEqual(e["CLAUDE_CONFIG_DIR"], "/tmp/rd/claude-home")
+
+    def test_collect_writes_diff_and_metrics(self):
+        run_dir = self.base / "rd"
+        run_dir.mkdir()
+        ws = run_dir / "workspace"
+        ws.mkdir()
+        (ws / "new.txt").write_text("hello\n", encoding="utf-8")
+        _git(ws, "init", "-b", "main")
+        _git(ws, "config", "user.email", "t@example.com")
+        _git(ws, "config", "user.name", "t")
+        _git(ws, "add", "-A")
+        _git(ws, "commit", "-m", "init")
+        (ws / "new.txt").write_text("changed\n", encoding="utf-8")
+        (run_dir / "claude_session.jsonl").write_text(
+            json.dumps(
+                {"type": "result", "subtype": "success", "result": "ok",
+                 "total_cost_usd": 0.25, "num_turns": 2, "is_error": False}
+            ),
+            encoding="utf-8",
+        )
+        ad = self._adapter()
+        ad._collect(run_dir, ws)
+        diff = (run_dir / "diff.patch").read_text(encoding="utf-8")
+        self.assertIn("changed", diff)
+        m = json.loads((run_dir / "metrics.json").read_text(encoding="utf-8"))
+        self.assertEqual(m["num_turns"], 2)
+        self.assertFalse(m["is_error"])
+        self.assertTrue(ad.delivered(run_dir))
+        self.assertIn("diff.patch", ad.deliverable_text(run_dir))
+
+    def test_trajectory_reads_stream(self):
+        run_dir = self.base / "rd2"
+        run_dir.mkdir()
+        (run_dir / "claude_session.jsonl").write_text(
+            json.dumps({"type": "assistant", "message": {"role": "assistant",
+                         "content": [{"type": "text", "text": "hi"}]}}),
+            encoding="utf-8",
+        )
+        ad = self._adapter()
+        out = ad.trajectory(run_dir, obs_trunc=100)
+        self.assertIn("[ASSISTANT] hi", out)
+
+
 if __name__ == "__main__":
     unittest.main()
