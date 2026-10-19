@@ -103,7 +103,6 @@ class ComposeTests(unittest.TestCase):
                 self.assertTrue(h["command"].strip())
 
     def test_leakguard_script_denies_gh_pr(self):
-        import os
         import subprocess
         import sys
         import tempfile
