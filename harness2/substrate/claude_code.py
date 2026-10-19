@@ -203,3 +203,118 @@ class ClaudeCodeSubstrate:
                 **{k: v for k, v in ctx.items() if not k.startswith("file:")},
             },
         )
+
+
+_TRUNC_FMT = "…(+{n} chars — render truncation)"
+
+
+def _clip(s, n: int) -> str:
+    s = "" if s is None else str(s)
+    s = s.replace("\x00", "")
+    if n <= 0 or len(s) <= n:
+        return s
+    return s[:n] + _TRUNC_FMT.format(n=len(s) - n)
+
+
+def parse_stream(path: Path) -> list[dict]:
+    """Read the claude -p --output-format stream-json stream, junk tolerated."""
+    try:
+        raw = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError as e:
+        return [{"type": "_read_error", "message": str(e)}]
+    events: list[dict] = []
+    for ln in raw.splitlines():
+        ln = ln.strip()
+        if not ln.startswith("{"):
+            continue
+        try:
+            ev = json.loads(ln)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(ev, dict):
+            events.append(ev)
+    return events
+
+
+def _content_items(ev: dict) -> list[dict]:
+    msg = ev.get("message")
+    if not isinstance(msg, dict):
+        return []
+    content = msg.get("content")
+    if isinstance(content, list):
+        return [c for c in content if isinstance(c, dict)]
+    if isinstance(content, str) and content.strip():
+        return [{"type": "text", "text": content}]
+    return []
+
+
+def _render_event(ev: dict, lines: list[str], obs_trunc: int, args_trunc: int) -> None:
+    et = ev.get("type", "")
+    if et == "assistant":
+        for c in _content_items(ev):
+            if c.get("type") == "tool_use":
+                lines.append(
+                    f"[ACTION] {c.get('name', 'tool')}: "
+                    + _clip(json.dumps(c.get("input", {}), ensure_ascii=False), args_trunc)
+                )
+            elif c.get("type") == "text" and str(c.get("text", "")).strip():
+                lines.append(f"[ASSISTANT] {_clip(c.get('text'), obs_trunc)}")
+        return
+    if et == "user":
+        for c in _content_items(ev):
+            if c.get("type") == "tool_result":
+                out = c.get("content")
+                if isinstance(out, list):
+                    out = " ".join(
+                        str(x.get("text", "")) for x in out if isinstance(x, dict)
+                    )
+                err = " ERROR" if c.get("is_error") else ""
+                lines.append(f"[OBSERVATION{err}] {_clip(out, obs_trunc)}")
+            elif c.get("type") == "text" and str(c.get("text", "")).strip():
+                lines.append(f"[USER] {_clip(c.get('text'), obs_trunc)}")
+        return
+    if et == "system":
+        if ev.get("subtype") == "init":
+            lines.append(
+                f"[HARNESS] session init | model={ev.get('model', '?')} "
+                f"cwd={ev.get('cwd', '?')}"
+            )
+        return
+    if et == "result":
+        lines.append(
+            "[HARNESS] result | turns={t} cost=${c} | {r}".format(
+                t=ev.get("num_turns"),
+                c=ev.get("total_cost_usd"),
+                r=_clip(ev.get("result"), 1000),
+            )
+        )
+        return
+    if et == "_read_error":
+        lines.append(f"[ERROR] failed to read trajectory: {ev.get('message')}")
+
+
+def render_stream(
+    path: Path, *, obs_trunc: int, max_chars: int, args_trunc: int = 400
+) -> str:
+    """Render a claude stream-json session into the shared grammar."""
+    lines: list[str] = []
+    for ev in parse_stream(Path(path)):
+        _render_event(ev, lines, obs_trunc, args_trunc)
+    rendered = "\n".join(lines).strip()
+    if not rendered:
+        return "(no parseable events in trajectory)"
+    if len(rendered) > max_chars:
+        dropped = len(rendered) - max_chars
+        rendered = rendered[:max_chars] + "\n" + _TRUNC_FMT.format(n=dropped)
+    return rendered
+
+
+def final_message(path: Path) -> str:
+    """Text of the last result event: the deliverable summary."""
+    last = ""
+    for ev in parse_stream(Path(path)):
+        if ev.get("type") == "result":
+            txt = str(ev.get("result") or "")
+            if txt.strip():
+                last = txt
+    return last

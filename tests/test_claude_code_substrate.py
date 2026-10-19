@@ -203,5 +203,96 @@ class MaterialiseTests(unittest.TestCase):
                 sub.materialise(Path(td) / "nope", make_spec(), {})
 
 
+_STREAM = "\n".join(
+    [
+        "junk preamble line",
+        json.dumps({"type": "system", "subtype": "init", "model": "glm", "cwd": "/ws"}),
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "building now"},
+                        {"type": "tool_use", "id": "t1", "name": "Bash",
+                         "input": {"command": "ninja -C builddir"}},
+                    ],
+                },
+            }
+        ),
+        json.dumps(
+            {
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "t1",
+                         "content": "build ok", "is_error": False}
+                    ],
+                },
+            }
+        ),
+        json.dumps(
+            {
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "t1",
+                         "content": "boom", "is_error": True}
+                    ],
+                },
+            }
+        ),
+        "{ torn json",
+        json.dumps({"type": "result", "subtype": "success", "result": "done summary",
+                    "total_cost_usd": 0.5, "num_turns": 3, "is_error": False}),
+    ]
+)
+
+
+class RenderTests(unittest.TestCase):
+    def _stream(self) -> Path:
+        f = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False)
+        f.write(_STREAM)
+        f.close()
+        self.addCleanup(Path(f.name).unlink)
+        return Path(f.name)
+
+    def test_render_grammar(self):
+        from harness2.substrate.claude_code import render_stream
+
+        out = render_stream(self._stream(), obs_trunc=1000, max_chars=10_000)
+        self.assertIn("[HARNESS] session init | model=glm", out)
+        self.assertIn("[ASSISTANT] building now", out)
+        self.assertIn("[ACTION] Bash: ", out)
+        self.assertIn("ninja -C builddir", out)
+        self.assertIn("[OBSERVATION] build ok", out)
+        self.assertIn("[OBSERVATION ERROR] boom", out)
+        self.assertIn("[HARNESS] result | turns=3 cost=$0.5 | done summary", out)
+
+    def test_render_truncates_to_max_chars(self):
+        from harness2.substrate.claude_code import render_stream
+
+        out = render_stream(self._stream(), obs_trunc=1000, max_chars=120)
+        self.assertLessEqual(len(out), 160)
+        self.assertIn("render truncation", out)
+
+    def test_final_message(self):
+        from harness2.substrate.claude_code import final_message
+
+        self.assertEqual(final_message(self._stream()), "done summary")
+
+    def test_empty_stream(self):
+        from harness2.substrate.claude_code import render_stream
+
+        f = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False)
+        f.write("")
+        f.close()
+        self.addCleanup(Path(f.name).unlink)
+        out = render_stream(Path(f.name), obs_trunc=100, max_chars=1000)
+        self.assertIn("no parseable events", out)
+
+
 if __name__ == "__main__":
     unittest.main()
