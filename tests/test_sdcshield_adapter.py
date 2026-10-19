@@ -23,6 +23,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from harness2 import config
+from harness2.core import tree as HT
+from harness2.substrate.claude_code import CLAUDE_CODE_SURFACE
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -419,6 +421,57 @@ class CliWiringTests(EnvFixture):
 
         with self.assertRaises(ValueError):
             make_adapter("sd", None, "oc")
+
+
+class SyncTests(EnvFixture):
+    def test_sync_dry_run_and_write(self):
+        import subprocess
+        import sys
+
+        from harness2.substrate.claude_code import LEAK_GUARD_JSON
+
+        target = self.base / "daily-repo"
+        target.mkdir()
+        (target / "CLAUDE.md").write_text("old\n", encoding="utf-8")
+        script = Path(__file__).resolve().parent.parent / "scripts" / "sync_sd_harness.py"
+        with tempfile.TemporaryDirectory() as td:
+            tree_d = HT.write_tree(
+                CLAUDE_CODE_SURFACE,
+                {
+                    "CLAUDE.md": "# improved\nbuild with meson\n",
+                    "GUARDRAILS.md": "rules v2\n",
+                    "MEMORY.md": "",
+                    "TOOL_GUIDANCE.md": "tools\n",
+                    ".claude/skills/deploy/SKILL.md": (
+                        "---\nname: deploy\ndescription: d\n---\n"
+                    ),
+                    "sub_agents/reviewer/AGENT.md": "---\ndescription: r\n---\n",
+                    ".claude/settings.harness.json": LEAK_GUARD_JSON,
+                },
+                Path(td) / "h",
+            )
+            r = subprocess.run(
+                [sys.executable, str(script), str(tree_d),
+                 "--repo", str(target), "--dry-run"],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("dry run", r.stdout)
+            self.assertEqual((target / "CLAUDE.md").read_text(encoding="utf-8"), "old\n")
+
+            r = subprocess.run(
+                [sys.executable, str(script), str(tree_d), "--repo", str(target)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+            composed = (target / "CLAUDE.md").read_text(encoding="utf-8")
+            self.assertIn("# improved", composed)
+            self.assertIn("harness2:GUARDRAILS.md", composed)
+            self.assertTrue(
+                (target / ".claude" / "skills" / "deploy" / "SKILL.md").is_file()
+            )
+            self.assertTrue((target / ".claude" / "agents" / "reviewer.md").is_file())
+            self.assertFalse((target / "GUARDRAILS.md").exists())  # composed, not copied
 
 
 if __name__ == "__main__":
