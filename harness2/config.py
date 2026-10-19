@@ -162,6 +162,13 @@ CODEX_CONTAINER_URL = env("HARNESS2_CODEX_CONTAINER_URL", CODEX_BASE_URL)
 VERTEX_PROXY_KEY = env("HARNESS2_CODEX_API_KEY", "")
 CODEX_HOME_DIR = DEPENDENCIES / "codex" / "home"
 
+SD_REPO = Path(env("HARNESS2_SD_REPO", str(ROOT.parent / "sdcshield"))).expanduser().resolve()
+SD_MAX_TURNS = env_int("HARNESS2_SD_MAX_TURNS", 200)
+CC_IMPROVER_MODEL = env("HARNESS2_CC_IMPROVER_MODEL", "glm-5.3")
+SD_BOARD_CMD = env("HARNESS2_SD_BOARD_CMD", "")
+SD_SKIP_BOARD = env("HARNESS2_SD_SKIP_BOARD", "") not in ("", "0", "false")
+SD_TEST_CMD = env("HARNESS2_SD_TEST_CMD", "")
+
 WB_SOLVER_MODEL = "harness2/solver"
 WB_WEB_JUDGE = "harness2/judge"
 WB_RENDER_PY = sys.executable
