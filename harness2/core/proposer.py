@@ -44,9 +44,15 @@ def claude_cli_env(
 ) -> dict[str, str]:
     """The claude_cli channel env: Vertex wiring, unless the CLI already targets a
     custom endpoint (e.g. a GLM bridge via ANTHROPIC_BASE_URL) — then the CLI's own
-    configuration wins and must not be overridden."""
+    configuration wins and the endpoint credentials are restored from the parent
+    environment (Proposer drops them for the Vertex path; a custom endpoint needs
+    them passed through)."""
     e = dict(base)
     if os.environ.get("ANTHROPIC_BASE_URL"):
+        for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"):
+            value = os.environ.get(key)
+            if value:
+                e[key] = value
         return e
     e.update(
         {

@@ -86,10 +86,15 @@ class ConfigTests(EnvFixture):
         from harness2.core.proposer import claude_cli_env
 
         base = {"PATH": "/bin"}
-        with patch.dict(os.environ, {"ANTHROPIC_BASE_URL": "http://glm:9100"}, clear=False):
-            e = claude_cli_env(base, "proj", "global", "m")
+        with patch.dict(
+            os.environ,
+            {"ANTHROPIC_BASE_URL": "http://glm:9100", "ANTHROPIC_AUTH_TOKEN": "tok"},
+            clear=False,
+        ):
+            e = claude_cli_env({}, "proj", "global", "m")
         self.assertNotIn("CLAUDE_CODE_USE_VERTEX", e)
-        self.assertEqual(e["PATH"], "/bin")
+        self.assertEqual(e.get("ANTHROPIC_BASE_URL"), "http://glm:9100")
+        self.assertEqual(e.get("ANTHROPIC_AUTH_TOKEN"), "tok")
 
         env_now = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_BASE_URL"}
         with patch.dict(os.environ, env_now, clear=True):
