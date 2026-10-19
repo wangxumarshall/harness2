@@ -405,6 +405,28 @@ class ScoreTests(EnvFixture):
         got = (ws / "cfg.txt").read_text(encoding="utf-8").strip()
         self.assertEqual(got, str(run_dir / "claude-home"))
 
+    def test_score_shape_includes_judge_keys(self):
+        ad = self._adapter()
+        run_dir = self.base / "rd-keys"
+        run_dir.mkdir()
+        ws = run_dir / "workspace"
+        ws.mkdir()
+        (ws / "meson.build").write_text("project('t', 'c')\n", encoding="utf-8")
+        from harness2.substrate.claude_code import LEAK_GUARD_JSON
+
+        with patch.object(config, "SD_SKIP_BOARD", True), patch.object(
+            config, "SD_TEST_CMD", "true"
+        ):
+            out = ad.score(run_dir, "pr-1")
+        self.assertIsNotNone(out)
+        self.assertIn("n_passed", out)
+        self.assertIn("n_criteria", out)
+        self.assertEqual(out["n_criteria"], 3)
+        self.assertIn("all_pass", out)
+        # l3 skipped-by-env counts as ok in this configuration
+        self.assertEqual(out["n_passed"], 3)
+        self.assertTrue(out["all_pass"])
+
 
 class CliWiringTests(EnvFixture):
     def test_make_adapter_dispatches_sd_cc(self):

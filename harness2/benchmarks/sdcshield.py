@@ -619,6 +619,9 @@ class SdShieldAdapter:
             "l2": l2,
             "l3": l3,
             "adopt_ok": bool(l1["ok"] and l2["ok"] and l3["ok"]),
+            "n_passed": sum(bool(x["ok"]) for x in (l1, l2, l3)),
+            "n_criteria": 3,
+            "all_pass": bool(l1["ok"] and l2["ok"] and l3["ok"]),
         }
         (Path(run_dir) / "scores.json").write_text(
             json.dumps(out, indent=1), encoding="utf-8"

@@ -22,9 +22,16 @@ The improvement channel is the `claude_cli` proposer on the same GLM-backed CLI.
 | `HARNESS2_SD_TEST_CMD` | custom L2 command (`sh -c`, cwd=workspace, `SD_BUILDDIR` set) |
 | `HARNESS2_SD_BOARD_CMD` | L3 fleet command — REQUIRED for adoption |
 | `HARNESS2_SD_SKIP_BOARD` | `1` skips L3 and lets adoption pass on L1+L2 (dev only) |
+| `HARNESS2_SOLVER_MODEL` / `HARNESS2_JUDGE_MODEL` | required by the shared model gates (inert labels for sd; e.g. `anthropic/glm-5.3` and `glm-5.3`) |
 
 `HARNESS2_SD_BOARD_CMD` runs as `sh -c` in the workspace with `SD_WORKSPACE`,
 `SD_BUILDDIR` and `SD_BOARDS="0201 0202"` exported; exit 0 = both boards pass.
+
+Without `HARNESS2_SD_TEST_CMD`, L2 falls back to `meson test`, which reports 0/0 when
+the workspace defines no meson tests — set `HARNESS2_SD_TEST_CMD` (e.g. wrapping
+`bats/`) for a non-vacuous L2. sdcshield's build needs the vendored Eigen:
+`PKG_CONFIG_PATH=$HARNESS2_SD_REPO/third-party/eigen5` (there is no system eigen3 on
+the reference machine).
 
 **L3 direction (decided 2026-10-19): gem5-fi controlled injection.** The board gate is
 being upgraded from deploy + stress + excitation to a ground-truth fault-injection
