@@ -537,5 +537,40 @@ class RollbackGuardTests(EnvFixture):
         self.assertEqual(dropped, [])
 
 
+class PreflightTests(EnvFixture):
+    def test_check_sd_skips_opencode_and_dependencies(self):
+        import types
+
+        from harness2 import preflight as PF
+        from harness2.benchmarks.sdcshield import sd_spec
+
+        calls: list[str] = []
+
+        def _tasks():
+            calls.append("tasks")
+            return []
+
+        def _preflight():
+            calls.append("preflight")
+
+        ad = types.SimpleNamespace(
+            spec=sd_spec(), tasks=_tasks, preflight=_preflight,
+            substrate=types.SimpleNamespace(name="cc"),
+        )
+        env = {
+            "HARNESS2_SOLVER_MODEL": "x/y",
+            "HARNESS2_IMPROVER_MODEL": "x/y",
+        }
+        # `check()` calls `config.validate_models`, which reads the module-level
+        # `SOLVER_MODEL_OC`/`IMPROVER_MODEL` (bound at import), not `os.environ`.
+        # Patch them too so the offline stub satisfies the model check.
+        with patch.dict(os.environ, env, clear=False), patch.object(
+            config, "SOLVER_MODEL_OC", "x/y"
+        ), patch.object(config, "IMPROVER_MODEL", "x/y"):
+            errors = PF.check(ad)
+        self.assertEqual(errors, [])
+        self.assertEqual(calls, ["tasks", "preflight"])
+
+
 if __name__ == "__main__":
     unittest.main()
