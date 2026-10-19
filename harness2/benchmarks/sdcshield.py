@@ -356,8 +356,7 @@ class SdShieldAdapter:
                 task_id, install, [run_id], int(timeout or self.timeout)
             )
         finally:
-            if install.extras.get("harness") == "staged":
-                shutil.rmtree(install.staging_dir, ignore_errors=True)
+            shutil.rmtree(install.staging_dir, ignore_errors=True)
         if not (out / "metrics.json").is_file():
             raise RuntimeError(
                 f"rollout produced no metrics.json: {out} — the claude session stream "
@@ -423,7 +422,7 @@ class SdShieldAdapter:
             ws = run_dir / "workspace"
             if ws.exists():
                 shutil.rmtree(ws, ignore_errors=True)
-                _git(config.SD_REPO, "worktree", "prune")
+            _git(config.SD_REPO, "worktree", "prune")
             _git(
                 config.SD_REPO, "worktree", "add", "--detach", str(ws), record["base_sha"]
             )
@@ -436,6 +435,16 @@ class SdShieldAdapter:
                     shutil.copytree(src, dst, dirs_exist_ok=True)
                 else:
                     shutil.copy2(src, dst)
+            subprocess.run(
+                ["git", "-C", str(ws), "add", "-A"], capture_output=True, text=True
+            )
+            tree = subprocess.run(
+                ["git", "-C", str(ws), "write-tree"], capture_output=True, text=True
+            )
+            if tree.returncode == 0 and tree.stdout.strip():
+                (run_dir / "overlay_tree").write_text(
+                    tree.stdout.strip(), encoding="utf-8"
+                )
             stream = run_dir / "claude_session.jsonl"
             cmd = [
                 "claude", "-p",
@@ -462,12 +471,23 @@ class SdShieldAdapter:
 
     def _collect(self, run_dir: Path, ws: Path) -> None:
         """Record the diff (the deliverable) and the metrics (from the result event)."""
-        subprocess.run(
-            ["git", "-C", str(ws), "add", "-N", "."], capture_output=True, text=True
-        )
-        diff = subprocess.run(
-            ["git", "-C", str(ws), "diff"], capture_output=True, text=True
-        )
+        overlay_tree = run_dir / "overlay_tree"
+        if overlay_tree.is_file():
+            base_tree = overlay_tree.read_text(encoding="utf-8").strip()
+            subprocess.run(
+                ["git", "-C", str(ws), "add", "-A"], capture_output=True, text=True
+            )
+            diff = subprocess.run(
+                ["git", "-C", str(ws), "diff", "--cached", base_tree],
+                capture_output=True, text=True,
+            )
+        else:
+            subprocess.run(
+                ["git", "-C", str(ws), "add", "-N", "."], capture_output=True, text=True
+            )
+            diff = subprocess.run(
+                ["git", "-C", str(ws), "diff"], capture_output=True, text=True
+            )
         (run_dir / "diff.patch").write_text(diff.stdout, encoding="utf-8")
         metrics = {"cost_usd": 0.0, "num_turns": 0, "is_error": True, "subtype": None}
         for ev in parse_stream(run_dir / "claude_session.jsonl"):
@@ -486,11 +506,11 @@ class SdShieldAdapter:
         root = self._results_root.resolve()
         if root != d and root not in d.parents:
             raise RuntimeError(f"refusing to remove {d}: outside the sd results root {root}")
+        shutil.rmtree(d, ignore_errors=True)
         subprocess.run(
             ["git", "-C", str(config.SD_REPO), "worktree", "prune"],
             capture_output=True, text=True,
         )
-        shutil.rmtree(d, ignore_errors=True)
 
     # -- read-back -----------------------------------------------------------
 

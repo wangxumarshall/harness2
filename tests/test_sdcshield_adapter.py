@@ -229,6 +229,62 @@ class AdapterTests(EnvFixture):
         out = ad.trajectory(run_dir, obs_trunc=100)
         self.assertIn("[ASSISTANT] hi", out)
 
+    def test_safe_rmtree_clears_worktree_registration(self):
+        ad = self._adapter()
+        run_dir = ad._run_dir("r-wt")
+        run_dir.mkdir(parents=True)
+        ws = run_dir / "workspace"
+        _git(self.repo, "worktree", "add", "--detach", str(ws), "HEAD")
+        self.assertTrue(ws.exists())
+        ad._safe_rmtree(run_dir)
+        self.assertFalse(ws.exists())
+        # the registration must be cleared: re-adding the same path succeeds
+        _git(self.repo, "worktree", "add", "--detach", str(ws), "HEAD")
+        self.assertTrue(ws.exists())
+
+    def test_collect_diff_excludes_overlay_noise(self):
+        import subprocess as sp
+
+        ad = self._adapter()
+        run_dir = self.base / "rd-ov"
+        run_dir.mkdir()
+        ws = run_dir / "workspace"
+        ws.mkdir()
+        (ws / "CLAUDE.md").write_text("seed\n", encoding="utf-8")
+        (ws / "det.c").write_text("int main(void){return 0;}\n", encoding="utf-8")
+        _git(ws, "init", "-b", "main")
+        _git(ws, "config", "user.email", "t@example.com")
+        _git(ws, "config", "user.name", "t")
+        _git(ws, "add", "-A")
+        _git(ws, "commit", "-m", "init")
+        # overlay: composed CLAUDE.md + injected leakguard
+        (ws / "CLAUDE.md").write_text(
+            "<!-- harness2:CLAUDE.md -->\n\nseed\n", encoding="utf-8"
+        )
+        (ws / "scripts").mkdir()
+        (ws / "scripts" / "harness2_leakguard.py").write_text("guard\n", encoding="utf-8")
+        sp.run(["git", "-C", str(ws), "add", "-A"], capture_output=True, text=True)
+        tree = sp.run(
+            ["git", "-C", str(ws), "write-tree"], capture_output=True, text=True
+        )
+        (run_dir / "overlay_tree").write_text(tree.stdout.strip(), encoding="utf-8")
+        (run_dir / "claude_session.jsonl").write_text(
+            json.dumps({"type": "result", "subtype": "success", "result": "ok"}),
+            encoding="utf-8",
+        )
+        # agent work: only det.c changes
+        (ws / "det.c").write_text("int main(void){return 1;}\n", encoding="utf-8")
+        ad._collect(run_dir, ws)
+        diff = (run_dir / "diff.patch").read_text(encoding="utf-8")
+        self.assertIn("det.c", diff)
+        self.assertNotIn("harness2_leakguard", diff)
+        self.assertNotIn("harness2:CLAUDE.md", diff)
+        self.assertTrue(ad.delivered(run_dir))
+        # a no-op workspace (identical to overlay) delivers nothing
+        (ws / "det.c").write_text("int main(void){return 0;}\n", encoding="utf-8")
+        ad._collect(run_dir, ws)
+        self.assertFalse(ad.delivered(run_dir))
+
 
 if __name__ == "__main__":
     unittest.main()
