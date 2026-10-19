@@ -599,3 +599,123 @@ class SdShieldAdapter:
             )
         if errs:
             raise ValueError(" | ".join(errs))
+
+    # -- three-layer scoring -------------------------------------------------
+
+    def score(self, run_dir: Path, task_id: str) -> dict | None:
+        """L1 build + L2 tests + L3 boards. Judge failure => None, never cached."""
+        ws = Path(run_dir) / "workspace"
+        if not ws.is_dir():
+            return None
+        try:
+            l1 = self._l1_build(ws, Path(run_dir))
+            l2 = self._l2_tests(ws, Path(run_dir), l1)
+            l3 = self._l3_boards(Path(run_dir), l1)
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(f"  [sd-cc] judging {Path(run_dir).name} failed: {exc}", flush=True)
+            return None
+        out = {
+            "l1": l1,
+            "l2": l2,
+            "l3": l3,
+            "adopt_ok": bool(l1["ok"] and l2["ok"] and l3["ok"]),
+        }
+        (Path(run_dir) / "scores.json").write_text(
+            json.dumps(out, indent=1), encoding="utf-8"
+        )
+        return out
+
+    def _l1_build(self, ws: Path, run_dir: Path) -> dict:
+        bd = ws / "builddir-h2"
+        if bd.exists():
+            shutil.rmtree(bd)
+        r = subprocess.run(
+            ["meson", "setup", str(bd)], cwd=ws, capture_output=True, text=True,
+            timeout=1800,
+        )
+        if r.returncode != 0:
+            (run_dir / "build.log").write_text(r.stdout + r.stderr, encoding="utf-8")
+            return {"ok": False, "warnings": 0, "note": "meson setup failed"}
+        n = subprocess.run(
+            ["ninja", "-C", str(bd)], cwd=ws, capture_output=True, text=True,
+            timeout=3600,
+        )
+        warnings = len(
+            re.findall(r"\bwarning\b", (n.stdout or "") + (n.stderr or ""), re.I)
+        )
+        (run_dir / "build.log").write_text(
+            r.stdout + n.stdout + n.stderr, encoding="utf-8"
+        )
+        return {"ok": n.returncode == 0, "warnings": warnings}
+
+    def _l2_tests(self, ws: Path, run_dir: Path, l1: dict) -> dict:
+        if not l1["ok"]:
+            return {"ok": False, "passed": 0, "total": 0, "note": "build failed"}
+        bd = ws / "builddir-h2"
+        env = {**_sd_env(run_dir.parent), "SD_BUILDDIR": str(bd), "SD_WORKSPACE": str(ws)}
+        if config.SD_TEST_CMD:
+            r = subprocess.run(
+                ["sh", "-c", config.SD_TEST_CMD], cwd=ws, env=env,
+                capture_output=True, text=True, timeout=7200,
+            )
+            (run_dir / "tests.log").write_text(r.stdout + r.stderr, encoding="utf-8")
+            return {"ok": r.returncode == 0, "cmd": "custom"}
+        r = subprocess.run(
+            ["meson", "test", "-C", str(bd), "--num-processes", "2"],
+            cwd=ws, capture_output=True, text=True, timeout=7200,
+        )
+        (run_dir / "tests.log").write_text(r.stdout + r.stderr, encoding="utf-8")
+        ok_n = int((re.search(r"^Ok:\s+(\d+)", r.stdout or "", re.M) or ["", "0"])[1])
+        fail_n = int((re.search(r"^Fail:\s+(\d+)", r.stdout or "", re.M) or ["", "0"])[1])
+        return {"ok": r.returncode == 0, "passed": ok_n, "total": ok_n + fail_n}
+
+    def _l3_boards(self, run_dir: Path, l1: dict) -> dict:
+        if not l1["ok"]:
+            return {"ok": False, "status": "skipped-build-failed"}
+        if config.SD_SKIP_BOARD:
+            return {"ok": True, "status": "skipped-by-env"}
+        if not config.SD_BOARD_CMD:
+            raise config.ConfigError(
+                "HARNESS2_SD_BOARD_CMD is required for board gating (deploy + stress "
+                "+ excitation on 0201/0202); set it in .env, or set "
+                "HARNESS2_SD_SKIP_BOARD=1 for local runs without adoption"
+            )
+        ws = run_dir / "workspace"
+        bd = ws / "builddir-h2"
+        r = subprocess.run(
+            ["sh", "-c", config.SD_BOARD_CMD],
+            cwd=ws,
+            env={
+                **_sd_env(run_dir),
+                "SD_WORKSPACE": str(ws),
+                "SD_BUILDDIR": str(bd),
+                "SD_BOARDS": "0201 0202",
+            },
+            capture_output=True, text=True, timeout=7 * 3600,
+        )
+        (run_dir / "boards.log").write_text(r.stdout + r.stderr, encoding="utf-8")
+        return {"ok": r.returncode == 0, "status": "ran"}
+
+    def preflight(self) -> None:
+        """Everything money-adjacent, checked before a rollout is paid for."""
+        self.substrate.preflight()
+        if not (config.SD_REPO / ".git").exists():
+            raise RuntimeError(
+                f"sdcshield repo missing at {config.SD_REPO}; set HARNESS2_SD_REPO"
+            )
+        for tool in ("meson", "ninja"):
+            if shutil.which(tool) is None:
+                raise RuntimeError(
+                    f"{tool} not found on PATH; install it for L1/L2 gating"
+                )
+        ping_dir = Path(tempfile.mkdtemp(prefix="sd-preflight-"))
+        r = subprocess.run(
+            ["claude", "-p", "--output-format", "json", "Reply with the word: pong"],
+            capture_output=True, text=True, timeout=300, env=_sd_env(ping_dir),
+        )
+        if r.returncode != 0 or "pong" not in (r.stdout or "").lower():
+            raise RuntimeError(
+                "claude -p roundtrip failed under the scrubbed env (check "
+                "ANTHROPIC_BASE_URL / credentials work without ~/.claude config): "
+                + (r.stderr or r.stdout or "")[-300:]
+            )

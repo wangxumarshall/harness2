@@ -337,5 +337,56 @@ class ValidateTests(EnvFixture):
         self.assertIn("meson", str(cm.exception))
 
 
+class ScoreTests(EnvFixture):
+    def _ws(self, name: str) -> tuple[Path, Path]:
+        run_dir = self.base / name
+        run_dir.mkdir(exist_ok=True)
+        ws = run_dir / "workspace"
+        ws.mkdir(exist_ok=True)
+        (ws / "meson.build").write_text("project('t', 'c')\n", encoding="utf-8")
+        return run_dir, ws
+
+    def test_l2_skips_when_build_failed(self):
+        ad = self._adapter()
+        run_dir, ws = self._ws("rd-fail")
+        out = ad._l2_tests(ws, run_dir, {"ok": False, "warnings": 0})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["note"], "build failed")
+
+    def test_l3_skipped_by_env(self):
+        ad = self._adapter()
+        run_dir, _ = self._ws("rd-skip")
+        with patch.object(config, "SD_SKIP_BOARD", True):
+            out = ad._l3_boards(run_dir, {"ok": True, "warnings": 0})
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["status"], "skipped-by-env")
+
+    def test_l3_runs_board_command(self):
+        ad = self._adapter()
+        run_dir, _ = self._ws("rd-board")
+        with patch.object(config, "SD_SKIP_BOARD", False), patch.object(
+            config, "SD_BOARD_CMD", 'test "$SD_BOARDS" = "0201 0202"'
+        ):
+            out = ad._l3_boards(run_dir, {"ok": True, "warnings": 0})
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["status"], "ran")
+        self.assertTrue((run_dir / "boards.log").is_file())
+
+    def test_l3_missing_command_raises_config_error(self):
+        ad = self._adapter()
+        run_dir, _ = self._ws("rd-nocmd")
+        with patch.object(config, "SD_SKIP_BOARD", False), patch.object(
+            config, "SD_BOARD_CMD", ""
+        ):
+            with self.assertRaises(config.ConfigError):
+                ad._l3_boards(run_dir, {"ok": True, "warnings": 0})
+
+    def test_score_returns_none_without_workspace(self):
+        ad = self._adapter()
+        empty = self.base / "rd-empty"
+        empty.mkdir()
+        self.assertIsNone(ad.score(empty, "pr-1"))
+
+
 if __name__ == "__main__":
     unittest.main()
