@@ -30,7 +30,6 @@ import tempfile
 from pathlib import Path
 from typing import Mapping
 
-from .. import config
 from ..core import runmark as RM
 from ..core import tree as HT
 from ..core.tree import SurfaceSpec
