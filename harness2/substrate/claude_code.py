@@ -24,8 +24,17 @@ immutable by the sdcshield adapter's validate_tree.
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+from typing import Mapping
 
+from .. import config
+from ..core import runmark as RM
+from ..core import tree as HT
 from ..core.tree import SurfaceSpec
+from .base import Install, Launcher, RunRequest
 
 CLAUDE_CODE_SURFACE = SurfaceSpec(
     name="cc",
@@ -140,3 +149,57 @@ def compose_claude_md(tree: dict[str, str]) -> str:
         if body:
             parts.append(f"<!-- harness2:{name} -->\n\n{body}")
     return ("\n\n".join(parts) + "\n") if parts else ""
+
+
+class ClaudeCodeSubstrate:
+    """claude CLI behind the one Substrate interface."""
+
+    name = "cc"
+
+    def __init__(self, launcher: Launcher | None = None):
+        self._launcher = launcher
+
+    def surface(self) -> SurfaceSpec:
+        return CLAUDE_CODE_SURFACE
+
+    def materialise(self, tree_dir: Path, spec, ctx: Mapping[str, str]) -> Install:
+        """Stage the tree as a Claude Code workspace overlay: composed CLAUDE.md, in-place
+        skills, translated agents, scripts, and the hooks settings file."""
+        if spec.install_mode != "claude_workspace":
+            raise ValueError(
+                f"install_mode {spec.install_mode!r} is not the claude mode; this "
+                "substrate has exactly one: 'claude_workspace'"
+            )
+        tree_dir = Path(tree_dir)
+        if not HT.is_tree(CLAUDE_CODE_SURFACE, tree_dir):
+            raise ValueError(f"{tree_dir} is not a claude_code harness tree (no always-on file)")
+        tree = HT.read_tree(CLAUDE_CODE_SURFACE, tree_dir)
+        staged = Path(tempfile.mkdtemp(prefix="adapt-cc-ws-"))
+        (staged / "CLAUDE.md").write_text(compose_claude_md(tree), encoding="utf-8")
+        for rel, content in tree.items():
+            if rel.startswith(".claude/skills/") or rel.startswith("scripts/"):
+                dst = staged / rel
+            elif rel.startswith("sub_agents/") and rel.endswith("/AGENT.md"):
+                name = rel[len("sub_agents/") : -len("/AGENT.md")]
+                dst = staged / ".claude" / "agents" / f"{name}.md"
+            elif rel == CLAUDE_CODE_SURFACE.hooks_file:
+                dst = staged / rel
+            else:
+                continue
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_text(content, encoding="utf-8")
+        hooks_dst = staged / CLAUDE_CODE_SURFACE.hooks_file
+        if not hooks_dst.is_file():
+            hooks_dst.parent.mkdir(parents=True, exist_ok=True)
+            hooks_dst.write_text(LEAK_GUARD_JSON, encoding="utf-8")
+        guard = staged / "scripts" / "harness2_leakguard.py"
+        guard.parent.mkdir(parents=True, exist_ok=True)
+        guard.write_text(LEAKGUARD_PY, encoding="utf-8")  # written LAST: never tree-replaceable
+        return Install(
+            staging_dir=staged,
+            fingerprint=RM.fingerprint(tree_dir),
+            extras={
+                "install_mode": "claude_workspace",
+                **{k: v for k, v in ctx.items() if not k.startswith("file:")},
+            },
+        )

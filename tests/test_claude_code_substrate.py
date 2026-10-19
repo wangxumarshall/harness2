@@ -19,9 +19,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from harness2.core import tree as HT
 from harness2.core.spec import BenchPrompts, BenchSpec, resolve_channel_model
 from harness2.core.tree import is_allowed
-from harness2.substrate.claude_code import CLAUDE_CODE_SURFACE
+from harness2.substrate.claude_code import CLAUDE_CODE_SURFACE, LEAK_GUARD_JSON
 
 
 def make_spec(install_mode: str = "claude_workspace", runs_root: Path | None = None) -> BenchSpec:
@@ -125,6 +126,81 @@ class ComposeTests(unittest.TestCase):
                 capture_output=True, text=True,
             )
             self.assertEqual(r.returncode, 0)
+
+
+class MaterialiseTests(unittest.TestCase):
+    def _tree(self) -> dict[str, str]:
+        return {
+            "CLAUDE.md": "# t\n",
+            "GUARDRAILS.md": "rules\n",
+            "MEMORY.md": "m\n",
+            "TOOL_GUIDANCE.md": "g\n",
+            ".claude/skills/deploy/SKILL.md": "---\nname: deploy\ndescription: d\n---\nbody\n",
+            "sub_agents/reviewer/AGENT.md": "---\ndescription: reviews\n---\nbe strict\n",
+            "scripts/helper.py": "print('hi')\n",
+            ".claude/settings.harness.json": json.dumps(
+                {"hooks": {"PreToolUse": json.loads(LEAK_GUARD_JSON)["hooks"]["PreToolUse"]
+                           + [{"matcher": "Write", "hooks": [{"type": "command", "command": "true"}]}]}}
+            ),
+        }
+
+    def test_materialise_translates_tree(self):
+        from harness2.substrate.claude_code import ClaudeCodeSubstrate
+
+        with tempfile.TemporaryDirectory() as td:
+            d = HT.write_tree(CLAUDE_CODE_SURFACE, self._tree(), Path(td) / "tree")
+            sub = ClaudeCodeSubstrate()
+            inst = sub.materialise(d, make_spec(runs_root=Path(td) / "runs"), {})
+            staged = inst.staging_dir
+            self.assertEqual(
+                (staged / "CLAUDE.md").read_text(encoding="utf-8"),
+                "<!-- harness2:CLAUDE.md -->\n\n# t\n\n"
+                "<!-- harness2:GUARDRAILS.md -->\n\nrules\n\n"
+                "<!-- harness2:MEMORY.md -->\n\nm\n\n"
+                "<!-- harness2:TOOL_GUIDANCE.md -->\n\ng\n",
+            )
+            self.assertTrue((staged / ".claude/skills/deploy/SKILL.md").is_file())
+            self.assertEqual(
+                (staged / ".claude/agents/reviewer.md").read_text(encoding="utf-8"),
+                "---\ndescription: reviews\n---\nbe strict\n",
+            )
+            self.assertTrue((staged / "scripts/helper.py").is_file())
+            # tree's hooks (with the extra Write matcher) are kept verbatim
+            self.assertIn('"Write"', (staged / ".claude/settings.harness.json").read_text())
+            # leakguard ships with every install
+            self.assertTrue((staged / "scripts/harness2_leakguard.py").is_file())
+            self.assertTrue(inst.fingerprint)
+
+    def test_materialise_defaults_hooks_and_overwrites_leakguard(self):
+        from harness2.substrate.claude_code import LEAKGUARD_PY, ClaudeCodeSubstrate
+
+        tree = self._tree()
+        del tree[".claude/settings.harness.json"]
+        tree["scripts/harness2_leakguard.py"] = "print('tampered')"  # must be overwritten
+        with tempfile.TemporaryDirectory() as td:
+            d = HT.write_tree(CLAUDE_CODE_SURFACE, tree, Path(td) / "tree")
+            sub = ClaudeCodeSubstrate()
+            inst = sub.materialise(d, make_spec(runs_root=Path(td) / "runs"), {})
+            staged = inst.staging_dir
+            self.assertEqual(
+                (staged / ".claude/settings.harness.json").read_text(encoding="utf-8"),
+                LEAK_GUARD_JSON,
+            )
+            self.assertEqual(
+                (staged / "scripts/harness2_leakguard.py").read_text(encoding="utf-8"),
+                LEAKGUARD_PY,
+            )
+
+    def test_materialise_rejects_wrong_mode_and_non_tree(self):
+        from harness2.substrate.claude_code import ClaudeCodeSubstrate
+
+        sub = ClaudeCodeSubstrate()
+        with tempfile.TemporaryDirectory() as td:
+            d = HT.write_tree(CLAUDE_CODE_SURFACE, {"CLAUDE.md": "x"}, Path(td) / "tree")
+            with self.assertRaises(ValueError):
+                sub.materialise(d, make_spec(install_mode="codex_root"), {})
+            with self.assertRaises(ValueError):
+                sub.materialise(Path(td) / "nope", make_spec(), {})
 
 
 if __name__ == "__main__":
