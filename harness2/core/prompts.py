@@ -292,6 +292,114 @@ Then reply with ONE `<notes>` block and nothing else: for each change, the momen
 trajectory that motivated it. The notes are read by a person, not applied by a machine."""
 
 
+_SURFACE_CC = """\
+# WHAT YOU CAN CHANGE
+
+The harness is a tree of components. Each has a different runtime cost and a different reach:
+
+| path | what it is | when it is in context |
+|---|---|---|
+| `CLAUDE.md` | c1 persona and procedure | ALWAYS ON -- composed into the workspace CLAUDE.md on every run |
+| `GUARDRAILS.md` | c2 rules and skill triggers | ALWAYS ON -- same composition, same cost |
+| `MEMORY.md` | c3 durable domain facts | ALWAYS ON -- same composition, same cost |
+| `TOOL_GUIDANCE.md` | c4 tool prose | ALWAYS ON -- same composition, same cost |
+| `.claude/skills/<name>/SKILL.md` | a reusable workflow | name+description advertised; the BODY is loaded ON DEMAND |
+| `.claude/skills/<name>/scripts/*` | a helper carried with its skill | run via Bash |
+| `sub_agents/<name>/AGENT.md` | a delegated agent role | installed as `.claude/agents/<name>.md`, spawned in its OWN context, returns text |
+| `scripts/<name>.py` | a deterministic helper | run on demand via Bash as `python3 scripts/<name>.py` |
+| `.claude/settings.harness.json` | c8 lifecycle hooks | fire INSIDE the tool loop, on every matching tool call |
+
+The four ALWAYS ON files are composed into ONE CLAUDE.md before the run: their bodies share a
+single 24,000-character budget, and every token of it competes with the agent's own output
+budget on every turn.
+
+The three that are easy to get wrong:
+
+`.claude/skills/` -- YAML frontmatter with a `description:` is REQUIRED and `name:` must match
+the directory, or the skill is dropped or mismatched at load. Only name and description are
+shown up front -- a skill never NAMED in `GUARDRAILS.md` as a trigger is never opened, so it is
+pure dead weight. If a skill calls a helper, that helper must travel with it under the skill's
+own `scripts/` directory.
+
+`sub_agents/` -- frontmatter needs a `description:`; the runner installs each as
+`.claude/agents/<name>.md`, a named subagent spawned in a SEPARATE context. It sees only what
+its own file and the spawn instruction say, never the main conversation, and it returns text.
+Worth it for exactly one shape of problem: a bounded sub-task whose INPUT is large and whose
+ANSWER is small. A bad trade when the output is as big as the input.
+
+`.claude/settings.harness.json` -- ONE JSON file carrying ONLY a top-level "hooks" object:
+it maps an event (`PreToolUse`, `PostToolUse`, `SessionStart`, `Stop`) to matcher entries --
+a "matcher" such as "Bash" plus a "hooks" list of "command"-type entries. Each hook is a shell
+command receiving the event as JSON on stdin (`tool_name`, `tool_input`; PostToolUse adds
+`tool_response`). A `PreToolUse` exit code 2 blocks the call with the stderr reason; a
+PostToolUse command printing a JSON "decision" of "block" with a "reason" sends that reason
+back to the model. It acts in the tool loop rather than in the prompt -- the only way to
+enforce something the model cannot skip. Keep commands fast and non-interactive; put real
+logic in a `scripts/` helper the hook calls. TWO entries in this file are FIXED and cannot be
+removed or weakened: the leak-guard PreToolUse hooks. The file may carry no other top-level
+key -- `permissions` and `env` are not editable.
+
+Change only what a trajectory shows needs changing -- but WHERE you change something, the FORM
+matters as much as the content, and the cheap form is not the obvious one.
+
+ALWAYS-ON PROSE IS THE EXPENSIVE OPTION. Every word of the four composed files is in context
+on every run, competing with the agent's own output budget -- and the most costly failure on
+this work is a run that reasons until the budget is gone and produces nothing. Adding prose
+makes that MORE likely, not less. An on-demand component costs nothing until the moment it is
+invoked.
+
+So prefer, in this order:
+  - a SKILL for anything with a recognisable trigger -- a procedure for a component, a
+    format, a recurring situation. This is the default form for new instruction.
+  - a SCRIPT for a deterministic operation the runs hand-rolled and got wrong, or did slowly.
+  - a SUBAGENT for a bounded investigation whose input is large and whose answer is small.
+  - a HOOK when a recurring, mechanical problem in the tool loop is better handled there than
+    in prose. It acts inside the loop, so it cannot be ignored AND it costs nothing in
+    always-on budget. The recurring shapes: appending a targeted hint after an error signature
+    that keeps recurring; blocking a known-bad call with a reason that teaches the fix; and
+    verifying a write immediately after it happens.
+  - ALWAYS-ON TEXT last, and only for a short rule that genuinely applies to every run.
+    The four files share one hard cap, so if you add always-on text, cut something else to
+    pay for it.
+
+A skill only exists if the agent knows to call it: its literal name must appear in
+`GUARDRAILS.md` as a trigger, or it is dead weight.
+
+`CLAUDE.md` carries the persona and standing procedure: never delete it or leave it empty --
+a harness without it carries no standing instruction at all. To pay for a new rule, TRIM
+always-on text -- never empty the file.
+
+If a skill calls a helper script, ship it at `.claude/skills/<skill-name>/scripts/<file>.py`.
+A helper placed directly in the skill directory is OFF THE EDITABLE SURFACE and silently
+dropped, leaving the skill invoking a file that does not exist.
+
+THE DELIVERABLE'S SHAPE BELONGS TO THE REQUEST, NOT TO YOU. A harness changes HOW the agent
+works; it must never change WHAT SHAPE it delivers. Where the task names fields, columns,
+sections or an order, that shape is part of what was asked for. A component that tells the
+agent to add explanatory hunks, restate a derivation inside the change, rename a symbol for
+clarity, or surface intermediate values so a reviewer can check them is CHANGING THE
+DELIVERABLE -- and a downstream build or test keys on exact names and positions. Guidance
+that makes the agent's reasoning visible belongs in the harness text or the trajectory, never
+in the artifact. A change the task asks for must be delivered AS A CHANGE: a described-but-
+unperformed edit leaves the reader to finish the work.
+
+# HOW TO MAKE A CHANGE
+
+The harness is in `context/harness/`, and it is YOURS TO EDIT. Open the files, change them in
+place with your normal tools, and create new ones where a new component is the right lever.
+Your edits on disk ARE the proposal -- there is no separate format to reproduce them in, and
+nothing you write in this reply changes the harness.
+
+- Files you do not touch are inherited unchanged. Do not rewrite a file to keep it the same.
+- Delete a file to remove that component.
+- If the evidence does not argue for any change, leave everything as it is and say KEEP_BASE
+  in your notes. That is a real answer, not a failure: adaptation the evidence does not support
+  costs context and buys nothing.
+
+Then reply with ONE `<notes>` block and nothing else: for each change, the moment in a
+trajectory that motivated it. The notes are read by a person, not applied by a machine."""
+
+
 GENERALIZE = """\
 # GROUND IT IN THIS WORKSPACE, SHAPE IT FOR THE {DOMAIN_WORD_UPPER}
 
@@ -513,6 +621,59 @@ Hard rules, each one learned from a previous failure:
   surface."""
 
 
+_TTS_SURFACE_HEAD_CC = """\
+# EDITABLE HARNESS SURFACE
+
+You may write ONLY these paths. Anything else is off the editable surface: it is dropped before
+your work is used, however good it is.
+
+| path | component | when it is in context |
+|---|---|---|
+| `CLAUDE.md` | c1 persona and procedure | ALWAYS ON -- composed into every run's CLAUDE.md |
+| `GUARDRAILS.md` | c2 rules and skill triggers | ALWAYS ON -- same composition |
+| `MEMORY.md` | c3 durable domain facts | ALWAYS ON -- same composition |
+| `TOOL_GUIDANCE.md` | c4 tool prose | ALWAYS ON -- same composition |
+| `.claude/skills/<name>/SKILL.md` | c6 reusable workflow | name+description advertised; the BODY is read ON DEMAND |
+| `.claude/skills/<name>/scripts/*` | helper carried with its skill | run via Bash |
+| `sub_agents/<name>/AGENT.md` | c5 delegated agent role | installed as `.claude/agents/<name>.md`, spawned in its OWN context |
+| `scripts/<name>.py` | c7 deterministic helper | run ON DEMAND via Bash as `python3 scripts/<name>.py` |
+| `.claude/settings.harness.json` | c8 lifecycle hooks | fire INSIDE the tool loop, on every matching tool call |
+
+## The two on-demand levers that are easy to get wrong
+
+`sub_agents/<name>/AGENT.md` -- frontmatter needs a `description:`; the runner installs each as
+`.claude/agents/<name>.md`, a named subagent spawned in a SEPARATE context. It sees only what
+its own file and the spawn instruction say, never the main conversation, and it returns text.
+Worth it for exactly one shape of problem -- a bounded sub-task whose inputs are large and
+whose ANSWER is small. A bad trade when the output is as big as the input.
+
+`.claude/settings.harness.json` -- ONE JSON file carrying ONLY a top-level "hooks" object
+(Claude-Code hook schema): an event (`PreToolUse`, `PostToolUse`, `SessionStart`, `Stop`) maps
+to matcher entries -- a "matcher" such as "Bash" plus a "hooks" list of "command"-type entries.
+Each hook is a shell command receiving the event as JSON on stdin; `PreToolUse` exit code 2
+blocks the call with the stderr reason; a `PostToolUse` command printing a JSON "decision" of
+"block" with a "reason" sends that reason back to the model. Unlike everything else here it
+acts in the tool loop rather than in the prompt, which is the only way to enforce something
+the model cannot skip. The leak-guard PreToolUse entries in this file are FIXED -- keep them
+verbatim. Keep commands fast and non-interactive; put real logic in a `scripts/` helper the
+hook calls.
+
+Both levers are rare in the harnesses adopted so far. Read that as a gap in what has been tried,
+not as a verdict -- but still add one only where a trajectory shows the failure it would fix.
+
+Hard rules, each one learned from a previous failure:
+- The single most common failure of this harness family is producing NO deliverable because the
+  model exhausted its output budget on reasoning. Always-on prose makes that WORSE. Prefer an
+  on-demand skill over new always-on prose; if you add always-on text, cut something else --
+  the four always-on files share one hard cap, and CLAUDE.md is never left empty: it carries
+  the standing instruction.
+- A skill's literal directory name must appear in `GUARDRAILS.md` as a trigger, or the skill is
+  never opened. Scripts run via Bash.
+- `scripts/*.py` filenames must be snake_case and must compile under py_compile.
+- Never write the workspace's own `CLAUDE.md` beyond the editable tree or other runtime-owned
+  files: they are not on the editable surface."""
+
+
 _TTS_INV = """\
 # YOUR DIMENSION: INVARIANT -- how the agent works, independent of the subject
 
@@ -629,6 +790,13 @@ def _build_surface_texts() -> dict[str, _SurfaceText]:
             _surface_part(_SURFACE_CODEX, "# HOW TO MAKE A CHANGE"),
         ]
     )
+    cc_tts = "\n\n".join(
+        [
+            _TTS_SURFACE_HEAD_CC,
+            _surface_part(_SURFACE_CC, "A skill only exists", "THE DELIVERABLE'S SHAPE"),
+            _surface_part(_SURFACE_CC, "# HOW TO MAKE A CHANGE"),
+        ]
+    )
     return {
         "opencode": _SurfaceText(
             surface_md=_SURFACE_OPENCODE,
@@ -657,6 +825,20 @@ def _build_surface_texts() -> dict[str, _SurfaceText]:
                 "that trigger line in the same edit.",
             ),
             tts_surface=cx_tts,
+        ),
+        "cc": _SurfaceText(
+            surface_md=_SURFACE_CC,
+            inv=_INV_TEMPLATE.replace(
+                "__LOOP_LEVER__",
+                "hook in `.claude/settings.harness.json` -- for example, blocking a finish "
+                "before a {deliverable} exists, with a corrective reason",
+            ),
+            dom=_DOM_TEMPLATE.replace(
+                "__TRIGGER_SENTENCE__",
+                "A skill exists only once its name appears in `GUARDRAILS.md` as a trigger: "
+                "write that trigger line in the same edit.",
+            ),
+            tts_surface=cc_tts,
         ),
     }
 

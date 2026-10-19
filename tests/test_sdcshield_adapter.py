@@ -572,5 +572,28 @@ class PreflightTests(EnvFixture):
         self.assertEqual(calls, ["tasks", "preflight"])
 
 
+class PromptSurfaceTests(unittest.TestCase):
+    def test_cc_prompt_surface_resolves(self):
+        from harness2.core.prompts import _st
+
+        st = _st("cc")
+        self.assertIn("CLAUDE.md", st.surface_md)
+        self.assertIn(".claude/settings.harness.json", st.surface_md)
+        self.assertIn(".claude/skills/<name>/SKILL.md", st.surface_md)
+        self.assertIn("sub_agents/<name>/AGENT.md", st.surface_md)
+        self.assertIn("`GUARDRAILS.md`", st.dom)
+        self.assertIn("`.claude/settings.harness.json`", st.inv)
+        # tts composition extracted real spans (anchors present, non-empty)
+        self.assertIn("# EDITABLE HARNESS SURFACE", st.tts_surface)
+        self.assertIn("# HOW TO MAKE A CHANGE", st.tts_surface)
+        self.assertIn("THE DELIVERABLE'S SHAPE", st.surface_md)
+
+    def test_cc_surface_via_claude_code_surface_name(self):
+        from harness2.core.prompts import _st
+        from harness2.substrate.claude_code import CLAUDE_CODE_SURFACE
+
+        self.assertEqual(_st(CLAUDE_CODE_SURFACE).surface_md, _st("cc").surface_md)
+
+
 if __name__ == "__main__":
     unittest.main()
