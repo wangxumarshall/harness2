@@ -404,5 +404,22 @@ class ScoreTests(EnvFixture):
         self.assertEqual(got, str(run_dir / "claude-home"))
 
 
+class CliWiringTests(EnvFixture):
+    def test_make_adapter_dispatches_sd_cc(self):
+        from harness2.cli._common import BENCHES, SUBSTRATES, make_adapter
+
+        self.assertIn("sd", BENCHES)
+        self.assertIn("cc", SUBSTRATES)
+        ad = make_adapter("sd", None, "cc")
+        self.assertEqual(ad.spec.name, "sd")
+        self.assertEqual(ad.substrate.name, "cc")
+
+    def test_make_adapter_rejects_sd_on_other_substrates(self):
+        from harness2.cli._common import make_adapter
+
+        with self.assertRaises(ValueError):
+            make_adapter("sd", None, "oc")
+
+
 if __name__ == "__main__":
     unittest.main()
