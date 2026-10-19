@@ -474,5 +474,68 @@ class SyncTests(EnvFixture):
             self.assertFalse((target / "GUARDRAILS.md").exists())  # composed, not copied
 
 
+class RollbackGuardTests(EnvFixture):
+    def _mk_run(self, results_root: Path, run_id: str, task: str, ok: bool) -> None:
+        from harness2.core import runmark as RM
+
+        rd = results_root / run_id
+        rd.mkdir(parents=True)
+        RM.mark_complete(
+            rd, run_id=run_id, harness_dir=None,
+            extra={"task_id": task, "domain": "detector-cpu"},
+        )
+        (rd / "scores.json").write_text(
+            json.dumps({"l1": {"ok": ok}, "l2": {"ok": ok}}), encoding="utf-8"
+        )
+
+    def _mk_lib(self, library_root: Path, tasks: list[str]) -> None:
+        from harness2.core.library import Library
+        from harness2.substrate.claude_code import CLAUDE_CODE_SURFACE
+
+        lib = Library(library_root, "detector-cpu", CLAUDE_CODE_SURFACE)
+        for t in tasks:
+            lib.add(
+                t,
+                {"CLAUDE.md": "# h\nbuild with meson\n"},
+                experience={
+                    "cue": "c", "lesson": "l", "evidence": "e", "edits": "", "confidence": ""
+                },
+                label="composed", run_id="r",
+            )
+
+    def test_guard_drops_regressed_adoption(self):
+        import sys
+
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+        from sd_rollback_guard import guard
+
+        library_root = self.base / "lib"
+        results_root = self.base / "res"
+        self._mk_lib(library_root, ["pr-1", "pr-2"])
+        self._mk_run(results_root, "r1", "pr-1", True)
+        self._mk_run(results_root, "r2", "pr-2", False)
+        dropped = guard(library_root, results_root)
+        self.assertEqual(dropped, [("detector-cpu", "pr-2")])
+        from harness2.core.library import Library
+        from harness2.substrate.claude_code import CLAUDE_CODE_SURFACE
+
+        lib = Library(library_root, "detector-cpu", CLAUDE_CODE_SURFACE)
+        self.assertEqual(lib.entries(), ["pr-1"])
+
+    def test_guard_keeps_stable_adoption(self):
+        import sys
+
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+        from sd_rollback_guard import guard
+
+        library_root = self.base / "lib2"
+        results_root = self.base / "res2"
+        self._mk_lib(library_root, ["pr-1", "pr-2"])
+        self._mk_run(results_root, "r1", "pr-1", True)
+        self._mk_run(results_root, "r2", "pr-2", True)
+        dropped = guard(library_root, results_root)
+        self.assertEqual(dropped, [])
+
+
 if __name__ == "__main__":
     unittest.main()
