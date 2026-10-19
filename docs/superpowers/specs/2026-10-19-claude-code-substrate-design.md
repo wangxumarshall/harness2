@@ -136,6 +136,13 @@ L3 板级（小时级）: 0201/0202 部署 → sdc-stressng 压测 → sdc-excit
                   → 部署健康 + 检出/无误报
 ```
 
+**修订（2026-10-19，用户裁决）**：L3 升级为 **gem5-fi 受控故障注入验证**——以
+`gem5-fi` 仓库的双通道内核战役（方案：`gem5-fi/docs/superpowers/plans/2026-09-22-sdcshield-fi-eval.md`，
+分支 `fi-wx-verify-sdcshield`）量化 `P_detect = Detected/(Detected+Escape)`，
+`HARNESS2_SD_BOARD_CMD` 包固定种子 pilot 战役、按检出率阈值门禁采纳；0201/0202 作为
+仿真算力（96 核/64 核，同 aarch64，gem5.opt 可移植）。原部署压测方案保留为战役落地前
+的过渡门禁。
+
 - **probe 对比**（k 个候选 harness 间的选择）：L1+L2+轨迹行为对比——selection.py 的无
   ground truth 对比选择，快信号驱动；
 - **采纳门禁**（组合后的最终 harness）：L1+L2+L3 全绿（0201 和 0202 双板都过）才自动采纳；

@@ -25,7 +25,15 @@ The improvement channel is the `claude_cli` proposer on the same GLM-backed CLI.
 
 `HARNESS2_SD_BOARD_CMD` runs as `sh -c` in the workspace with `SD_WORKSPACE`,
 `SD_BUILDDIR` and `SD_BOARDS="0201 0202"` exported; exit 0 = both boards pass.
-Wrap your existing deploy + stress + excitation scripts here.
+
+**L3 direction (decided 2026-10-19): gem5-fi controlled injection.** The board gate is
+being upgraded from deploy + stress + excitation to a ground-truth fault-injection
+campaign driven by the `gem5-fi` repository (plan:
+`gem5-fi/docs/superpowers/plans/2026-09-22-sdcshield-fi-eval.md`, branch
+`fi-wx-verify-sdcshield`). The command will wrap a fixed-seed pilot campaign (e.g.
+20 faults × a dual-channel sdcshield kernel) on 0201/0202 and gate adoption on
+`P_detect ≥ threshold`. Until that campaign lands, the command may wrap the legacy
+deploy + stress + excitation scripts.
 
 ## Run
 
