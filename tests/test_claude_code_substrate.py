@@ -72,5 +72,61 @@ class SurfaceTests(unittest.TestCase):
         self.assertIn("SessionStart", CLAUDE_CODE_SURFACE.hook_events)
 
 
+class ComposeTests(unittest.TestCase):
+    def test_compose_joins_markers_and_skips_empty(self):
+        from harness2.substrate.claude_code import compose_claude_md
+
+        tree = {
+            "CLAUDE.md": "# title\n",
+            "GUARDRAILS.md": "be careful\n",
+            "MEMORY.md": "",
+            "TOOL_GUIDANCE.md": "tools here\n",
+        }
+        out = compose_claude_md(tree)
+        self.assertIn("<!-- harness2:CLAUDE.md -->\n\n# title", out)
+        self.assertIn("<!-- harness2:GUARDRAILS.md -->\n\nbe careful", out)
+        self.assertIn("<!-- harness2:TOOL_GUIDANCE.md -->", out)
+        self.assertNotIn("harness2:MEMORY.md", out)  # empty body skipped
+
+    def test_leak_guard_json_shape(self):
+        from harness2.substrate.claude_code import LEAK_GUARD_JSON
+
+        doc = json.loads(LEAK_GUARD_JSON)
+        self.assertEqual(set(doc), {"hooks"})
+        pre = doc["hooks"]["PreToolUse"]
+        matchers = [e.get("matcher") for e in pre]
+        self.assertIn("WebFetch|WebSearch", matchers)
+        self.assertIn("Bash", matchers)
+        for entry in pre:
+            for h in entry["hooks"]:
+                self.assertEqual(h["type"], "command")
+                self.assertTrue(h["command"].strip())
+
+    def test_leakguard_script_denies_gh_pr(self):
+        import os
+        import subprocess
+        import sys
+        import tempfile
+
+        from harness2.substrate.claude_code import LEAKGUARD_PY
+
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "g.py"
+            p.write_text(LEAKGUARD_PY, encoding="utf-8")
+            for blocked in ["gh pr view 3", "curl https://github.com/x/y", "git fetch origin"]:
+                r = subprocess.run(
+                    [sys.executable, str(p)],
+                    input=json.dumps({"tool_input": {"command": blocked}}),
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(r.returncode, 2, blocked)
+            r = subprocess.run(
+                [sys.executable, str(p)],
+                input=json.dumps({"tool_input": {"command": "ninja -C builddir"}}),
+                capture_output=True, text=True,
+            )
+            self.assertEqual(r.returncode, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

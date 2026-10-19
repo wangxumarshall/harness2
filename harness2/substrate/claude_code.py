@@ -23,6 +23,8 @@ immutable by the sdcshield adapter's validate_tree.
 
 from __future__ import annotations
 
+import json
+
 from ..core.tree import SurfaceSpec
 
 CLAUDE_CODE_SURFACE = SurfaceSpec(
@@ -79,3 +81,62 @@ CLAUDE_CODE_SURFACE = SurfaceSpec(
         ),
     ),
 )
+
+
+LEAK_GUARD_JSON = json.dumps(
+    {
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": "WebFetch|WebSearch",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": (
+                                "echo 'leakguard: network tools are disabled for this "
+                                "task' >&2; exit 2"
+                            ),
+                        }
+                    ],
+                },
+                {
+                    "matcher": "Bash",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "python3 scripts/harness2_leakguard.py",
+                        }
+                    ],
+                },
+            ]
+        }
+    },
+    indent=2,
+)
+
+LEAKGUARD_PY = r'''#!/usr/bin/env python3
+"""PreToolUse guard for replayed tasks: block commands that can fetch the real PR."""
+import json, re, sys
+
+_DENY = re.compile(r"\bgh\s+pr\b|github\.com|\bgit\s+fetch\b|\bgit\s+remote\b", re.I)
+
+try:
+    _ev = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+cmd = str((_ev.get("tool_input") or {}).get("command", ""))
+if _DENY.search(cmd):
+    print(f"leakguard: blocked (replay isolation): {cmd[:120]}", file=sys.stderr)
+    sys.exit(2)
+sys.exit(0)
+'''
+
+
+def compose_claude_md(tree: dict[str, str]) -> str:
+    """Join the four always-on bodies into one CLAUDE.md with marker comments."""
+    parts = []
+    for name in CLAUDE_CODE_SURFACE.always_on:
+        body = tree.get(name, "").strip()
+        if body:
+            parts.append(f"<!-- harness2:{name} -->\n\n{body}")
+    return ("\n\n".join(parts) + "\n") if parts else ""
