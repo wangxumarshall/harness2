@@ -293,6 +293,33 @@ class RenderTests(unittest.TestCase):
         out = render_stream(Path(f.name), obs_trunc=100, max_chars=1000)
         self.assertIn("no parseable events", out)
 
+    def test_error_and_user_branches(self):
+        from harness2.substrate.claude_code import render_stream
+
+        out = render_stream(
+            Path("/nonexistent/h2-trajectory.jsonl"),
+            obs_trunc=100,
+            max_chars=1000,
+        )
+        self.assertIn("[ERROR] failed to read trajectory", out)
+
+        f = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False)
+        f.write(
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": "plain user note"}],
+                    },
+                }
+            )
+        )
+        f.close()
+        self.addCleanup(Path(f.name).unlink)
+        out = render_stream(Path(f.name), obs_trunc=100, max_chars=1000)
+        self.assertIn("[USER] plain user note", out)
+
 
 if __name__ == "__main__":
     unittest.main()
