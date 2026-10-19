@@ -204,6 +204,36 @@ class ClaudeCodeSubstrate:
             },
         )
 
+    def execute(
+        self, task_ref: str, install: Install, run_ids: list[str], timeout: int
+    ) -> list[Path]:
+        if self._launcher is None:
+            raise RuntimeError(
+                "ClaudeCodeSubstrate was constructed without a launcher body; the "
+                "benchmark adapter must supply one (it owns worktree, env scrubbing "
+                "and read-back)"
+            )
+        return self._launcher(
+            RunRequest(task_ref=task_ref, run_ids=tuple(run_ids), timeout=int(timeout)),
+            install,
+        )
+
+    def read_trajectory(
+        self, stream_path: Path, *, obs_trunc: int, max_chars: int, args_trunc: int = 400
+    ) -> str:
+        return render_stream(
+            Path(stream_path), obs_trunc=obs_trunc, max_chars=max_chars, args_trunc=args_trunc
+        )
+
+    def preflight(self) -> None:
+        """The claude CLI must exist and run; the model chain is pinged by the adapter."""
+        cli = shutil.which("claude")
+        if cli is None:
+            raise RuntimeError("claude CLI not found on PATH; install Claude Code first")
+        r = subprocess.run([cli, "--version"], capture_output=True, text=True, timeout=60)
+        if r.returncode != 0:
+            raise RuntimeError(f"claude --version failed: {(r.stderr or '')[-200:]}")
+
 
 _TRUNC_FMT = "…(+{n} chars — render truncation)"
 

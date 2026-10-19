@@ -321,5 +321,45 @@ class RenderTests(unittest.TestCase):
         self.assertIn("[USER] plain user note", out)
 
 
+class ExecuteTests(unittest.TestCase):
+    def test_execute_requires_launcher(self):
+        from harness2.substrate.base import Install
+        from harness2.substrate.claude_code import ClaudeCodeSubstrate
+
+        sub = ClaudeCodeSubstrate()
+        with tempfile.TemporaryDirectory() as td:
+            inst = Install(staging_dir=Path(td), fingerprint="f")
+            with self.assertRaises(RuntimeError):
+                sub.execute("pr-1", inst, ["r1"], 60)
+
+    def test_execute_delegates_to_launcher(self):
+        from harness2.substrate.base import Install, RunRequest
+        from harness2.substrate.claude_code import ClaudeCodeSubstrate
+
+        seen = []
+
+        def launcher(req: RunRequest, install: Install) -> list[Path]:
+            seen.append((req.task_ref, req.run_ids, req.timeout, install.fingerprint))
+            return [Path("/tmp/r1")]
+
+        sub = ClaudeCodeSubstrate(launcher=launcher)
+        with tempfile.TemporaryDirectory() as td:
+            inst = Install(staging_dir=Path(td), fingerprint="f")
+            out = sub.execute("pr-9", inst, ["r1"], 120)
+        self.assertEqual(out, [Path("/tmp/r1")])
+        self.assertEqual(seen, [("pr-9", ("r1",), 120, "f")])
+
+    def test_read_trajectory_delegates(self):
+        from harness2.substrate.claude_code import ClaudeCodeSubstrate
+
+        f = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False)
+        f.write(_STREAM)
+        f.close()
+        self.addCleanup(Path(f.name).unlink)
+        sub = ClaudeCodeSubstrate()
+        out = sub.read_trajectory(Path(f.name), obs_trunc=1000, max_chars=10_000)
+        self.assertIn("[ACTION] Bash:", out)
+
+
 if __name__ == "__main__":
     unittest.main()
