@@ -556,3 +556,46 @@ class SdShieldAdapter:
             and "output_fingerprint" in marker
             and marker["output_fingerprint"] == self._output_fingerprint(run_dir)
         )
+
+    def validate_tree(self, tree: dict[str, str]) -> None:
+        """Adoption gates: hooks-only settings, immutable leak-guard, reserved script,
+        and the build rule. ALL problems land in one ValueError (retry feedback)."""
+        errs: list[str] = []
+        src = tree.get(CLAUDE_CODE_SURFACE.hooks_file)
+        if src is not None:
+            try:
+                doc = json.loads(src)
+            except json.JSONDecodeError as exc:
+                errs.append(f"{CLAUDE_CODE_SURFACE.hooks_file} is not valid JSON: {exc}")
+                doc = None
+            if isinstance(doc, dict):
+                extra = sorted(set(doc) - {"hooks"})
+                if extra:
+                    errs.append(
+                        f"{CLAUDE_CODE_SURFACE.hooks_file} may carry ONLY the `hooks` "
+                        f"key (found {', '.join(extra)}); permissions and env are not "
+                        "editable"
+                    )
+                deny = json.loads(LEAK_GUARD_JSON)["hooks"]["PreToolUse"]
+                hooks = doc.get("hooks")
+                got = hooks.get("PreToolUse", []) if isinstance(hooks, dict) else []
+                for entry in deny:
+                    if entry not in got:
+                        errs.append(
+                            "the leak-guard PreToolUse hooks are immutable: the entry "
+                            f"{json.dumps(entry)[:120]} must stay in "
+                            f"{CLAUDE_CODE_SURFACE.hooks_file} verbatim"
+                        )
+        if "scripts/harness2_leakguard.py" in tree:
+            errs.append(
+                "scripts/harness2_leakguard.py is reserved; it ships with every install "
+                "and cannot be part of a harness tree"
+            )
+        body = HT.always_on_text(CLAUDE_CODE_SURFACE, tree)
+        if "meson" not in body.lower():
+            errs.append(
+                "the always-on text must keep the build rule (name `meson`) — a change "
+                "that drops it stops building before finishing. Add the meson rule back."
+            )
+        if errs:
+            raise ValueError(" | ".join(errs))

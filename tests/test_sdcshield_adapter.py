@@ -286,5 +286,56 @@ class AdapterTests(EnvFixture):
         self.assertFalse(ad.delivered(run_dir))
 
 
+class ValidateTests(EnvFixture):
+    def _tree(self, **over):
+        from harness2.substrate.claude_code import LEAK_GUARD_JSON
+
+        tree = {
+            "CLAUDE.md": "# t\nRun `meson` builds before finishing.\n",
+            "GUARDRAILS.md": "",
+            "MEMORY.md": "",
+            "TOOL_GUIDANCE.md": "",
+            ".claude/settings.harness.json": LEAK_GUARD_JSON,
+        }
+        tree.update(over)
+        return tree
+
+    def test_valid_tree_passes(self):
+        ad = self._adapter()
+        ad.validate_tree(self._tree())
+
+    def test_permissions_key_rejected(self):
+        ad = self._adapter()
+        bad = json.loads(self._tree()[".claude/settings.harness.json"])
+        bad["permissions"] = {"allow": ["Bash"]}
+        with self.assertRaises(ValueError) as cm:
+            ad.validate_tree(
+                {**self._tree(), ".claude/settings.harness.json": json.dumps(bad)}
+            )
+        self.assertIn("ONLY the `hooks` key", str(cm.exception))
+
+    def test_missing_deny_entry_rejected(self):
+        ad = self._adapter()
+        bad = json.loads(self._tree()[".claude/settings.harness.json"])
+        bad["hooks"]["PreToolUse"] = bad["hooks"]["PreToolUse"][:1]  # drop Bash guard
+        with self.assertRaises(ValueError) as cm:
+            ad.validate_tree(
+                {**self._tree(), ".claude/settings.harness.json": json.dumps(bad)}
+            )
+        self.assertIn("immutable", str(cm.exception))
+
+    def test_reserved_script_rejected(self):
+        ad = self._adapter()
+        with self.assertRaises(ValueError) as cm:
+            ad.validate_tree(self._tree(**{"scripts/harness2_leakguard.py": "x"}))
+        self.assertIn("reserved", str(cm.exception))
+
+    def test_missing_meson_rule_rejected(self):
+        ad = self._adapter()
+        with self.assertRaises(ValueError) as cm:
+            ad.validate_tree(self._tree(**{"CLAUDE.md": "# no build rule\n"}))
+        self.assertIn("meson", str(cm.exception))
+
+
 if __name__ == "__main__":
     unittest.main()
